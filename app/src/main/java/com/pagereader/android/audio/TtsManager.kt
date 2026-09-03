@@ -2,23 +2,13 @@ package com.pagereader.android.audio
 
 import android.content.Context
 import android.media.AudioAttributes
+import android.media.AudioManager
+import android.media.ToneGenerator
 import android.os.Bundle
 import android.speech.tts.TextToSpeech
 import android.util.Log
-import java.util.EnumMap
+import com.pagereader.android.guidance.Instruction
 import java.util.Locale
-
-enum class GuidanceCue(val text: String) {
-    HOLD_STEADY("Hold steady"),
-    READY("Ready to capture"),
-    MOVE_LEFT("Move left"),
-    MOVE_RIGHT("Move right"),
-    MOVE_UP("Move up"),
-    MOVE_DOWN("Move down"),
-    MOVE_BACK("Move the camera back"),
-    NO_DOCUMENT("No document detected"),
-    FOUND("Document found. Hold steady.")
-}
 
 /**
  * Speech output, written defensively because the target device has no Google
@@ -27,17 +17,21 @@ enum class GuidanceCue(val text: String) {
  * silently does nothing and still returns SUCCESS. That failure is invisible
  * unless you look for it, so language availability is checked explicitly at init
  * and logged.
+ *
+ * Deliberately dumb: it says what it is told to say, once, and owns no
+ * throttling policy. v1 spread debounce logic across per-cue cooldowns here
+ * while the guidance layer re-decided every frame, so neither half knew what the
+ * user was currently being told. Deciding *whether* to speak now belongs
+ * entirely to `GuidancePolicy`.
  */
 class TtsManager(private val context: Context) {
 
     private var tts: TextToSpeech? = null
+    private var tone: ToneGenerator? = null
     private var utteranceCounter = 0
 
     @Volatile
     private var available = false
-
-    /** Per-cue last-spoken timestamps. Each cue debounces independently. */
-    private val lastSpokenAt = EnumMap<GuidanceCue, Long>(GuidanceCue::class.java)
 
     fun initialize(onReady: () -> Unit) {
         tts = TextToSpeech(context) { initStatus ->
@@ -66,6 +60,13 @@ class TtsManager(private val context: Context) {
                     .build()
             )
 
+            tone = try {
+                ToneGenerator(AudioManager.STREAM_MUSIC, TONE_VOLUME)
+            } catch (t: Throwable) {
+                Log.w(TAG, "no tone generator available", t)
+                null
+            }
+
             Log.i(TAG, "TTS ready: $engine / $locale")
             available = true
             onReady()
@@ -90,24 +91,22 @@ class TtsManager(private val context: Context) {
     }
 
     /**
-     * Speaks [cue] unless the same cue was spoken less than [cooldownMs] ago.
-     * The cooldown is tracked per cue, so a change of instruction is never
-     * blocked by the previous one.
+     * Says [instruction] now, cutting off anything still playing.
      *
-     * Always QUEUE_FLUSH: guidance is real-time, and an instruction that is
-     * still playing after the situation changed is actively misleading.
+     * QUEUE_FLUSH is still right: the policy only calls this when the situation
+     * has actually changed, and a stale instruction finishing over a new one is
+     * worse than a clipped word.
      *
-     * Call from the main thread.
+     * Main thread only.
      */
-    fun speak(cue: GuidanceCue, cooldownMs: Long = 2000L) {
+    fun speak(instruction: Instruction) {
         if (!available) return
+        tts?.speak(instruction.text, TextToSpeech.QUEUE_FLUSH, Bundle(), "pr-${utteranceCounter++}")
+    }
 
-        val now = System.currentTimeMillis()
-        val last = lastSpokenAt[cue]
-        if (last != null && now - last < cooldownMs) return
-        lastSpokenAt[cue] = now
-
-        tts?.speak(cue.text, TextToSpeech.QUEUE_FLUSH, Bundle(), "pr-${utteranceCounter++}")
+    /** Short non-speech confirmation, for events that need no words. */
+    fun earcon() {
+        tone?.startTone(ToneGenerator.TONE_PROP_BEEP, EARCON_MS)
     }
 
     fun shutdown() {
@@ -115,10 +114,14 @@ class TtsManager(private val context: Context) {
         tts?.stop()
         tts?.shutdown()
         tts = null
+        tone?.release()
+        tone = null
     }
 
     companion object {
         private const val TAG = "TtsManager"
         private const val SPEECH_RATE = 1.15f
+        private const val TONE_VOLUME = 80
+        private const val EARCON_MS = 150
     }
 }
