@@ -113,9 +113,16 @@ class CollectionWriter(private val context: Context) {
                 .put("lighting", setup.lighting)
                 .put("device", "${Build.MANUFACTURER} ${Build.MODEL}")
                 .put("androidSdk", Build.VERSION.SDK_INT)
+                // Every gate, not just the absolute one. Which config produced a
+                // collection has to be readable from the collection itself --
+                // the relative gates are the ones that do the real work, and
+                // without them here you cannot tell two shoots apart.
                 .put("minSharpness", gateConfig.minSharpness)
+                .put("relativeSharpness", gateConfig.relativeSharpness)
+                .put("sessionSharpness", gateConfig.sessionSharpness)
                 .put("minThumbDistance", gateConfig.minThumbDistance)
                 .put("periodMs", gateConfig.periodMs)
+                .put("warmupFrames", gateConfig.warmupFrames)
                 .toString(2)
         )
         Log.i(TAG, "collecting into ${dir.absolutePath}")
