@@ -24,3 +24,4 @@ dependencyResolutionManagement {
 
 rootProject.name = "PageReader"
 include(":app")
+include(":collector")
