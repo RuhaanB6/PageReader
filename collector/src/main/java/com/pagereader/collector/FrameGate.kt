@@ -85,6 +85,24 @@ class FrameGate(
     private val history = ArrayDeque<Mat>()
     private var nextAllowedMs = 0L
 
+    /**
+     * Sharpness of every frame KEPT in the current take, for the median that
+     * [TakeVerdict] judges. Distinct from [sharpnessWindow], which observes
+     * rejected frames too because the relative floor has to track the scene.
+     */
+    private val keptSharpness = mutableListOf<Double>()
+
+    /**
+     * An even spread of kept thumbnails across the take, for the diversity
+     * measure. Capped, and thinned by doubling the stride when full, so the
+     * sample stays spread over the whole take rather than clustering at its
+     * start -- a take where the phone only moved in the first two seconds must
+     * not look diverse.
+     */
+    private val sample = ArrayDeque<Mat>()
+    private var sampleStride = 1
+    private var keptSeen = 0
+
     /** Recent sharpness readings, for the scene-relative blur gate. */
     private val sharpnessWindow = ArrayDeque<Double>()
 
@@ -132,6 +150,8 @@ class FrameGate(
                 return Decision(false, Reject.DUPLICATE, sharpness)
             }
 
+            sampleForQuality(thumb)
+            keptSharpness += sharpness
             remember(thumb)
             scheduleNext(nowMs)
             return Decision(true, Reject.NONE, sharpness)
@@ -188,15 +208,54 @@ class FrameGate(
         while (history.size > config.historySize) history.removeFirst().release()
     }
 
+    /** Clones, because [remember] owns the original and releases it on eviction. */
+    private fun sampleForQuality(thumb: Mat) {
+        if (keptSeen++ % sampleStride != 0) return
+        sample.addLast(thumb.clone())
+        if (sample.size <= SAMPLE_MAX) return
+        // Full: drop every other entry and halve the sampling rate, which keeps
+        // the survivors evenly spaced across everything seen so far.
+        val kept = ArrayDeque<Mat>()
+        sample.forEachIndexed { i, m -> if (i % 2 == 0) kept.addLast(m) else m.release() }
+        sample.clear()
+        sample.addAll(kept)
+        sampleStride *= 2
+    }
+
+    /**
+     * What [TakeVerdict] needs to judge the take just finished. Cheap: the
+     * thumbnails are 32x32 and capped at [SAMPLE_MAX].
+     */
+    fun takeQuality(frames: Int): TakeVerdict.Quality {
+        val p50 = if (keptSharpness.isEmpty()) 0.0
+                  else keptSharpness.sorted()[keptSharpness.size / 2]
+        val d = mutableListOf<Double>()
+        val s = sample.toList()
+        for (i in s.indices) {
+            for (j in i + 1 until s.size) {
+                d += Core.norm(s[i], s[j], Core.NORM_L1) / (THUMB * THUMB)
+            }
+        }
+        return TakeVerdict.Quality(frames, p50, TakeVerdict.diversityOf(d))
+    }
+
     fun reset() {
         history.forEach { it.release() }
         history.clear()
+        sample.forEach { it.release() }
+        sample.clear()
+        keptSharpness.clear()
+        sampleStride = 1
+        keptSeen = 0
         sharpnessWindow.clear()
         nextAllowedMs = 0L
         lastSharpness = 0.0
     }
 
     companion object {
+        /** Matches the n=24 thumbnail sample in tools/verify-collection.py. */
+        private const val SAMPLE_MAX = 24
+
         private const val SHARPNESS_W = 320
         private const val SHARPNESS_H = 240
         private const val THUMB = 32

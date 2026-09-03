@@ -71,6 +71,13 @@ class CollectorActivity : ComponentActivity(), SensorEventListener {
     private val sharpness = mutableStateOf(0.0)
     private val freeMb = mutableStateOf(0L)
     private val status = mutableStateOf("")
+
+    /** Verdict on the take just finished; null while recording or before the first. */
+    private val verdict = mutableStateOf<TakeVerdict.Verdict?>(null)
+    private val verdictTake = mutableStateOf<Take?>(null)
+
+    /** Frames per take in this collection, for the session panel. */
+    private val takeCounts = mutableStateOf<Map<Take, Int>>(emptyMap())
     private var takeStartedMs = 0L
 
     private val permissionLauncher = registerForActivityResult(
@@ -173,6 +180,8 @@ class CollectorActivity : ComponentActivity(), SensorEventListener {
             writer.discard(take.value)
         }
         status.value = ""
+        verdict.value = null
+        verdictTake.value = null
         gate.reset()
         stats.value = TakeStats()
         takeStartedMs = System.currentTimeMillis()
@@ -183,11 +192,31 @@ class CollectorActivity : ComponentActivity(), SensorEventListener {
         recording.value = false
         freeMb.value = writer.freeMb()
         val s = stats.value
-        writer.finishTake(take.value, s, (System.currentTimeMillis() - takeStartedMs) / 1000)
-        status.value = "kept ${s.kept}"
-        // Auto-advance the selector; starting is still an explicit press.
-        val next = Take.entries.indexOf(take.value) + 1
-        if (next < Take.entries.size) take.value = Take.entries[next]
+        val finished = take.value
+
+        // Judged here, on the phone, while the scene is still on the desk.
+        // Pulling the collection first would mean reshooting a rebuilt scene.
+        val quality = gate.takeQuality(s.kept)
+        val v = TakeVerdict.judge(s, quality)
+        writer.finishTake(
+            finished, s, (System.currentTimeMillis() - takeStartedMs) / 1000, quality, v
+        )
+        verdict.value = v
+        verdictTake.value = finished
+        status.value = ""
+        refreshCounts()
+
+        // Advance only when the take is worth keeping, so a failed one stays
+        // selected and the next press reshoots it rather than moving on.
+        if (v.ok) {
+            val next = Take.entries.indexOf(finished) + 1
+            if (next < Take.entries.size) take.value = Take.entries[next]
+        }
+    }
+
+    private fun refreshCounts() {
+        val counts = Take.entries.associateWith { writer.countFor(it) }
+        mainHandler.post { takeCounts.value = counts }
     }
 
     // -------------------------------------------------------------- sensors
@@ -263,6 +292,9 @@ class CollectorActivity : ComponentActivity(), SensorEventListener {
                     Spacer(Modifier.height(8.dp))
                     Counters()
 
+                    VerdictPanel()
+                    SessionPanel()
+
                     Spacer(Modifier.height(8.dp))
                     Button(
                         onClick = { if (recording.value) stopTake() else startTake() },
@@ -274,12 +306,81 @@ class CollectorActivity : ComponentActivity(), SensorEventListener {
                         Text(
                             if (recording.value) "STOP"
                             else if (status.value == CONFIRM_REPLACE) "PRESS AGAIN TO REPLACE"
+                            else if (verdict.value?.ok == false) "RESHOOT ${take.value.tag}"
                             else "START",
                             fontSize = 20.sp,
                             fontWeight = FontWeight.Bold
                         )
                     }
                 }
+            }
+        }
+    }
+
+    /**
+     * The verdict on the take just finished. Loud on purpose: this is the only
+     * moment where reshooting is cheap, and a quiet advisory would be missed.
+     */
+    @Composable
+    private fun VerdictPanel() {
+        val v = verdict.value ?: return
+        val t = verdictTake.value ?: return
+        val bg = if (v.ok) Color(0xFF1B5E20) else Color(0xFFB00020)
+        Column(
+            Modifier.fillMaxWidth().padding(top = 8.dp)
+                .background(bg).padding(horizontal = 10.dp, vertical = 8.dp)
+        ) {
+            Text(
+                if (v.ok) "${t.tag}  —  GOOD" else "${t.tag}  —  RESHOOT",
+                color = Color.White, fontSize = 16.sp, fontWeight = FontWeight.Bold
+            )
+            v.fatal.forEach {
+                Text("• $it", color = Color.White, fontSize = 13.sp)
+            }
+            v.advice.forEach {
+                Text("• $it", color = Color(0xFFE0E0E0), fontSize = 12.sp)
+            }
+            if (v.ok && v.advice.isEmpty()) {
+                Text(
+                    "${stats.value.kept} frames kept",
+                    color = Color(0xFFC8E6C9), fontSize = 12.sp
+                )
+            }
+        }
+    }
+
+    /** What is still missing from this setup, so nothing is discovered later. */
+    @Composable
+    private fun SessionPanel() {
+        val counts = takeCounts.value
+        if (counts.isEmpty()) return
+        val sv = TakeVerdict.judgeSession(counts)
+        Column(Modifier.fillMaxWidth().padding(top = 6.dp)) {
+            Text(
+                Take.entries.joinToString("  ") { tk ->
+                    val n = counts[tk] ?: 0
+                    if (n > 0) "${tk.tag.take(4)}:$n" else "${tk.tag.take(4)}:—"
+                },
+                color = Color(0xFF9E9E9E), fontSize = 10.sp
+            )
+            if (sv.complete) {
+                Text(
+                    "all ${sv.totalFrames} frames · setup complete",
+                    color = Color(0xFF81C784), fontSize = 11.sp
+                )
+            } else {
+                Text(
+                    "${sv.totalFrames} frames · still to shoot: " +
+                        sv.missing.joinToString(", ") { it.tag },
+                    color = Color(0xFFFFB74D), fontSize = 11.sp
+                )
+            }
+            if (sv.partialThin) {
+                Text(
+                    "only ${"%.0f".format(sv.partialFraction * 100)}% partial-edge — " +
+                        "those drive the guidance cues, aim for ~40%",
+                    color = Color(0xFFFFB74D), fontSize = 11.sp
+                )
             }
         }
     }
@@ -312,6 +413,9 @@ class CollectorActivity : ComponentActivity(), SensorEventListener {
         take.value = Take.FULL_OVERHEAD
         stats.value = TakeStats()
         status.value = ""
+        verdict.value = null
+        verdictTake.value = null
+        refreshCounts()
     }
 
     @Composable

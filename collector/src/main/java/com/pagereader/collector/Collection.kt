@@ -101,7 +101,7 @@ class CollectionWriter(private val context: Context) {
             if (!exists()) writeText("file,take,surface,document,lighting,sharpness,tMs\n")
         }
         takeLog = File(dir, "takes.csv").apply {
-            if (!exists()) writeText("take,kept,blur,duplicate,shake,seconds\n")
+            if (!exists()) writeText("take,kept,blur,duplicate,shake,seconds,sharpP50,diversity,verdict,notes\n")
         }
         counter = existingFrameCount()
 
@@ -138,13 +138,27 @@ class CollectionWriter(private val context: Context) {
      * gates are set sensibly -- the first threshold rejected zero frames out of
      * 48 and that was invisible from the manifest alone.
      */
-    fun finishTake(take: Take, stats: TakeStats, seconds: Long) {
+    fun finishTake(
+        take: Take,
+        stats: TakeStats,
+        seconds: Long,
+        quality: TakeVerdict.Quality,
+        verdict: TakeVerdict.Verdict,
+    ) {
         val log = takeLog ?: return
         io.execute {
             try {
+                // The verdict is recorded, not just shown, so the call made at the
+                // desk survives into the pulled collection and can be audited.
                 log.appendText(
                     "${take.tag},${stats.kept},${stats.blur},${stats.duplicate}," +
-                        "${stats.shake},$seconds\n"
+                        "${stats.shake},$seconds," +
+                        "%.0f,%.1f,%s,\"%s\"\n".format(
+                            quality.sharpnessP50,
+                            quality.diversity,
+                            if (verdict.ok) "ok" else "reshoot",
+                            verdict.summary.replace("\"", "'"),
+                        )
                 )
             } catch (t: Throwable) {
                 Log.w(TAG, "take log failed", t)
