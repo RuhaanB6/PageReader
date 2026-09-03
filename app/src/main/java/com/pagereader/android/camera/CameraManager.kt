@@ -11,21 +11,41 @@ import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.LifecycleOwner
+import com.pagereader.android.detect.PageDetector
+import com.pagereader.android.detect.PageObservation
 import org.opencv.core.Core
 import org.opencv.core.CvType
 import org.opencv.core.Mat
+import org.opencv.core.Size
 import org.opencv.imgproc.Imgproc
 import java.nio.ByteBuffer
 import java.util.concurrent.Executors
 import kotlin.math.min
 
+/**
+ * Drives the camera and runs [detector] over preview frames.
+ *
+ * Detection is deliberately rate-limited well below the camera's frame rate.
+ * A person cannot act on framing corrections faster than a few times a second,
+ * and v1's habit of re-deciding 30 times a second was a direct cause of its
+ * speech being unusable -- so the pipeline runs at [MIN_INTERVAL_MS] and drops
+ * everything in between.
+ */
 class CameraManager(
     private val context: Context,
     private val lifecycleOwner: LifecycleOwner,
-    private val onEdgeResult: (EdgeResult) -> Unit
+    private val detector: PageDetector,
+    /**
+     * Called on the main thread. [preview] is a downscaled BGR copy of the
+     * analysed frame and **ownership passes to the callback**, which must
+     * release it.
+     */
+    private val onFrame: (observation: PageObservation, latencyMs: Long, preview: Mat) -> Unit
 ) {
     private val analysisExecutor = Executors.newSingleThreadExecutor()
     private val mainHandler = Handler(Looper.getMainLooper())
+
+    private var lastRunMs = 0L
 
     fun bindCamera(previewView: PreviewView) {
         // Stated explicitly rather than relying on the default: the debug
@@ -60,14 +80,25 @@ class CameraManager(
 
     private fun processFrame(imageProxy: ImageProxy) {
         try {
+            val now = System.currentTimeMillis()
+            if (now - lastRunMs < MIN_INTERVAL_MS) return
+            lastRunMs = now
+
             val bgr = yuvToBgrMat(imageProxy)
             val rotated = rotateMat(bgr, imageProxy.imageInfo.rotationDegrees)
             if (rotated !== bgr) bgr.release()
 
-            val result = DocumentEdgeDetector.detect(rotated)
+            val t0 = System.nanoTime()
+            val result = detector.detect(rotated, null)
+            val latencyMs = (System.nanoTime() - t0) / 1_000_000
+
+            // A small copy for the recorder, so a log line about a missed page
+            // can be matched against the picture that produced it.
+            val preview = Mat()
+            Imgproc.resize(rotated, preview, Size(PREVIEW_WIDTH.toDouble(), PREVIEW_HEIGHT.toDouble()))
             rotated.release()
 
-            mainHandler.post { onEdgeResult(result) }
+            mainHandler.post { onFrame(result, latencyMs, preview) }
         } finally {
             imageProxy.close()
         }
@@ -139,5 +170,13 @@ class CameraManager(
         val rotated = Mat()
         Core.rotate(mat, rotated, rotateCode)
         return rotated
+    }
+
+    companion object {
+        /** ~6 detections per second. See the class comment. */
+        private const val MIN_INTERVAL_MS = 150L
+
+        private const val PREVIEW_WIDTH = 480
+        private const val PREVIEW_HEIGHT = 360
     }
 }
