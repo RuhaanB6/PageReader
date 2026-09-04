@@ -104,6 +104,29 @@ class TtsManager(private val context: Context) {
         tts?.speak(instruction.text, TextToSpeech.QUEUE_FLUSH, Bundle(), "pr-${utteranceCounter++}")
     }
 
+    /**
+     * Says arbitrary [text].
+     *
+     * [speak] is limited to the fixed [Instruction] strings, which is right for
+     * the framing loop but cannot carry a page's contents, a capture
+     * confirmation, or a failure explanation. Those are the whole product past
+     * the shutter, so they need a channel that takes words.
+     *
+     * @param flush true cuts off whatever is playing; false queues behind it.
+     * Framing corrections flush because a stale one is worse than a clipped
+     * word. Read-aloud text queues, so sentences do not truncate each other.
+     *
+     * Main thread only.
+     */
+    fun say(text: String, flush: Boolean = true) {
+        if (!available || text.isBlank()) return
+        val mode = if (flush) TextToSpeech.QUEUE_FLUSH else TextToSpeech.QUEUE_ADD
+        tts?.speak(text, mode, Bundle(), "pr-${utteranceCounter++}")
+    }
+
+    /** True when an engine and an English voice were both found at init. */
+    val isAvailable: Boolean get() = available
+
     /** Short non-speech confirmation, for events that need no words. */
     fun earcon() {
         tone?.startTone(ToneGenerator.TONE_PROP_BEEP, EARCON_MS)

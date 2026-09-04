@@ -4,6 +4,7 @@ import android.Manifest
 import android.content.pm.PackageManager
 import android.os.Bundle
 import android.util.Log
+import android.view.KeyEvent
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -13,6 +14,7 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -22,6 +24,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
@@ -50,7 +53,11 @@ class MainActivity : ComponentActivity() {
     private val hasCameraPermission = mutableStateOf(false)
     private val latestObservation = mutableStateOf<PageObservation?>(null)
     private val debugLine = mutableStateOf("starting")
-    private var detectorLabel = "?" 
+    private var detectorLabel = "?"
+
+    /** Guards against a second shutter while one is already in flight. */
+    private var capturing = false
+    private var lastCapture: org.opencv.core.Mat? = null
 
     private val cameraPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
@@ -81,7 +88,17 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             PageReaderTheme {
-                Box(modifier = Modifier.fillMaxSize()) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        // Double-tap anywhere is the second manual shutter. The
+                        // whole screen is the target because a blind user cannot
+                        // aim at a button, and double- rather than single-tap so
+                        // a hand steadying the phone does not fire it.
+                        .pointerInput(Unit) {
+                            detectTapGestures(onDoubleTap = { takeStill(auto = false) })
+                        }
+                ) {
                     if (hasCameraPermission.value) {
                         AndroidView(
                             factory = { context ->
@@ -157,7 +174,7 @@ class MainActivity : ComponentActivity() {
             val decision = policy.update(observation, shaking, System.currentTimeMillis())
 
             decision.utterance?.let { ttsManager.speak(it) }
-            if (decision.capture) ttsManager.earcon()
+            if (decision.capture) takeStill(auto = true)
 
             debugLine.value = buildString {
                 append(detectorLabel)
@@ -199,9 +216,74 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    /**
+     * Shutter. Speaks before the work starts, not after.
+     *
+     * Everything between here and a spoken result is silent, and to someone who
+     * cannot see the screen silence is indistinguishable from a crash. The
+     * earcon marks the instant of capture; the words say what is happening next.
+     */
+    private fun takeStill(auto: Boolean) {
+        if (capturing) return
+        capturing = true
+
+        ttsManager.earcon()
+        ttsManager.say("Captured. Reading the page.")
+
+        try {
+            cameraManager.capture(
+                onResult = { mat ->
+                    capturing = false
+                    lastCapture?.release()
+                    lastCapture = mat
+                    Log.i(TAG, "captured ${mat.width()}x${mat.height()} (auto=$auto)")
+                    // M4 takes over here: re-detect the quad on the still, then
+                    // dewarp. Until then the still is held so its size can be
+                    // read off the debug line and the path verified on device.
+                    debugLine.value = "captured ${mat.width()}x${mat.height()}"
+                },
+                onFailure = { message ->
+                    capturing = false
+                    Log.w(TAG, "capture failed: $message")
+                    ttsManager.say(message)
+                }
+            )
+        } catch (t: Throwable) {
+            // Without this a synchronous throw strands `capturing` true and the
+            // shutter never fires again -- silently, which is the failure mode
+            // this app can least afford.
+            capturing = false
+            Log.e(TAG, "capture threw", t)
+            ttsManager.say("The camera failed. Try again.")
+        }
+    }
+
+    /**
+     * Volume keys are the manual shutter.
+     *
+     * They need no aim, work without looking, and stay live even while guidance
+     * is still complaining -- the user's judgement about when the page is framed
+     * overrides the gates. Returning true consumes the key so the volume does
+     * not also change.
+     */
+    override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
+        return when (keyCode) {
+            KeyEvent.KEYCODE_VOLUME_UP, KeyEvent.KEYCODE_VOLUME_DOWN -> {
+                takeStill(auto = false)
+                true
+            }
+            else -> super.onKeyDown(keyCode, event)
+        }
+    }
+
     override fun onResume() {
         super.onResume()
         shakeDetector.start()
+        // A shot interrupted by pausing can leave the framing loop unbound on
+        // devices that need the use-case swap. Heal it rather than coming back
+        // to a preview that never speaks.
+        cameraManager.recoverIfInterrupted()
+        capturing = false
     }
 
     override fun onPause() {
@@ -211,6 +293,8 @@ class MainActivity : ComponentActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
+        lastCapture?.release()
+        lastCapture = null
         recorder.stop()
         ttsManager.shutdown()
     }
