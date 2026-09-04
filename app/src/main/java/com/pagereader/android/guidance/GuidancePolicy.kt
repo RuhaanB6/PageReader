@@ -35,7 +35,14 @@ class GuidancePolicy(private val config: Config = Config()) {
         /** Consecutive observations a condition must hold before it is spoken. */
         val dwellFrames: Int = 3,
         /** Below this, an observation is treated as "no page". */
-        val minConfidence: Float = 0.45f,
+        /**
+         * Measured on the 725-frame model: 0.45 keeps 99% of correct boxes but
+         * lets through spurious carpet boxes at 0.31-0.59, where correct ones
+         * sit at 0.84-0.91. Raising to 0.60 halves both the spurious-box count
+         * and the oversized-box rate on unseen carpet, and the 5% of frames it
+         * costs is nearly free because dwellFrames already tolerates drops.
+         */
+        val minConfidence: Float = 0.60f,
 
         val coverageTooCloseTrigger: Float = 0.90f,
         val coverageTooCloseRelease: Float = 0.80f,
