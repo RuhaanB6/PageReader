@@ -231,7 +231,11 @@ class CollectorActivity : ComponentActivity(), SensorEventListener {
     override fun onPause() {
         super.onPause()
         sensorManager.unregisterListener(this)
-        recording.value = false
+        // Close the take properly rather than just dropping the flag. Clearing
+        // recording alone left the frames on disk with no takes.csv row, so the
+        // take was never judged and no verdict was shown -- silently skipping
+        // the check in exactly the case most likely to have produced a bad take.
+        if (recording.value) stopTake() else recording.value = false
     }
 
     override fun onDestroy() {
