@@ -47,7 +47,10 @@ class FakeImageProxy(
     override fun getImageInfo(): ImageInfo = object : ImageInfo {
         override fun getTagBundle(): TagBundle = TagBundle.emptyBundle()
         override fun getTimestamp(): Long = 0L
-        override fun getRotationDegrees(): Int = rotationDegrees
+        // Qualified: bare `rotationDegrees` resolves to this anonymous object's own
+        // synthesized property for getRotationDegrees(), not the outer ctor param,
+        // which recurses until StackOverflowError.
+        override fun getRotationDegrees(): Int = this@FakeImageProxy.rotationDegrees
         override fun populateExifData(builder: ExifData.Builder) = Unit
     }
 
