@@ -55,3 +55,4 @@ runs/
 # Planning handoff + its Python oracle — local working docs, not repo artifacts
 /HANDOFF-*.md
 /HANDOFF-*.py
+models-archive/
