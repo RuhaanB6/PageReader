@@ -106,16 +106,21 @@ class YoloDnnEngine private constructor(
 
             if (boxes.isEmpty()) return emptyList()
 
+            // These three are bound to names rather than built inline in the
+            // NMSBoxes(...) argument list: an inline MatOfRect2d/MatOfFloat has no
+            // reference left to release(), so it leaks its native buffer on every
+            // frame that finds a box (36 bytes per candidate, ~6 fps, forever).
+            val boxMat = MatOfRect2d(*boxes.toTypedArray())
+            val scoreMat = MatOfFloat(*scores.toFloatArray())
             val indices = MatOfInt()
-            Dnn.NMSBoxes(
-                MatOfRect2d(*boxes.toTypedArray()),
-                MatOfFloat(*scores.toFloatArray()),
-                scoreThreshold,
-                nmsThreshold,
-                indices
-            )
-            val kept = if (indices.empty()) IntArray(0) else indices.toArray()
-            indices.release()
+            val kept = try {
+                Dnn.NMSBoxes(boxMat, scoreMat, scoreThreshold, nmsThreshold, indices)
+                if (indices.empty()) IntArray(0) else indices.toArray()
+            } finally {
+                boxMat.release()
+                scoreMat.release()
+                indices.release()
+            }
 
             return kept
                 .map { Detection(boxes[it], scores[it], classes[it]) }
