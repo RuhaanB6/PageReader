@@ -155,6 +155,36 @@ refuted mine was more useful than one that agreed.
 
 ---
 
+## 5b. Token discipline
+
+The tooling `CLAUDE.global.md` used to reference (`grepai`, `rtk`, `repomix`, `ast-grep`,
+`cckit`) is **not installed on this machine** — verified 2026-09-05, along with the
+SessionStart hook that was supposed to install it. Those rules have been corrected. Don't
+invoke them; they fail and cost a turn.
+
+None of that matters much, because the expensive things in this repo are specific and the
+built-ins handle them:
+
+- **Never run a bare `adb logcat`.** This is the single most expensive command here. The
+  phone emits continuous vendor thermal, telephony and launcher chatter, and one unfiltered
+  dump buries whatever you were looking for. Always `adb logcat -s <TAG>` — `PageReader`,
+  `YoloDnnEngine`, `QuadFit`, `PageReaderBench`. When hunting an unknown failure, grep for a
+  narrow alternation rather than dumping.
+- **Filter Gradle**: `--console=plain 2>&1 | grep -E 'error:|FAILED|BUILD' | head`. And
+  prefer `am instrument` (§1), which is quieter as well as faster.
+- **Read lines, not files.** `sed -n '120,160p'` beats opening 400 lines to check one
+  function. Whole-file reads are for files you are about to rewrite.
+- **Long output goes to a file**, then grep the file.
+
+The biggest lever is not a flag, it is **delegation** (§5). Two Sonnet subagents read four
+files across roughly 130k tokens of their own context and returned two short summaries; none
+of those reads entered the main session. That is what disproved the leak hypothesis. Ask them
+to *confirm or refute* a stated hypothesis — the audit that refuted mine was the useful one.
+
+The second biggest is **writing findings down**. Everything durable — CLAUDE.md rules, the
+handoff, `brain/Exploration.md`, comments on the constants — is context you can then discard.
+That is what makes starting a fresh session cheap instead of a loss.
+
 ## 6. Verification
 
 - JVM tests for logic: `./gradlew test`. `GuidancePolicyTest` is the model —
