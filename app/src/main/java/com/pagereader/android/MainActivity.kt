@@ -7,6 +7,8 @@ import android.util.Log
 import android.view.KeyEvent
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.compose.foundation.gestures.detectVerticalDragGestures
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.camera.view.PreviewView
@@ -39,6 +41,11 @@ import com.pagereader.android.guidance.GuidancePolicy
 import com.pagereader.android.guidance.ShakeDetector
 import com.pagereader.android.dewarp.DewarpResult
 import com.pagereader.android.ocr.OcrPage
+import com.pagereader.android.reading.CaptureQuality
+import com.pagereader.android.reading.ExploreScreen
+import com.pagereader.android.reading.PagePlayer
+import com.pagereader.android.reading.ReadingScreen
+import com.pagereader.android.storage.CaptureStore
 import com.pagereader.android.ocr.TesseractOcr
 import com.pagereader.android.dewarp.PageDewarper
 import com.pagereader.android.telemetry.SessionRecorder
@@ -90,6 +97,26 @@ class MainActivity : ComponentActivity() {
     private var ocr: TesseractOcr? = null
     private var ocrUnavailable = false
     private var lastPageText: OcrPage? = null
+
+    /** Which screen is in front. The camera is only the first step. */
+    private val mode = mutableStateOf(Mode.FRAMING)
+    private val readingPage = mutableStateOf<OcrPage?>(null)
+    private val currentBlockId = mutableStateOf<Int?>(null)
+
+    private lateinit var store: CaptureStore
+    private var currentCaptureId: String? = null
+
+    /**
+     * Built once TTS is up, because it needs the engine as its [Speaker].
+     * Position changes are written straight through to the store: being killed
+     * mid-page is the normal case here, not an edge case.
+     */
+    private val player: PagePlayer by lazy {
+        PagePlayer(ttsManager) { p ->
+            currentBlockId.value = p.currentBlock?.id
+            currentCaptureId?.let { store.savePosition(it, p.position) }
+        }
+    }
     private var lastProgressSpokenAt = 0
 
     private val cameraPermissionLauncher = registerForActivityResult(
@@ -104,11 +131,22 @@ class MainActivity : ComponentActivity() {
 
         ttsManager = TtsManager(this)
         recorder = SessionRecorder(this)
+        store = CaptureStore(this)
+        store.prune()
         recorder.start()
 
         shakeDetector = ShakeDetector(
             context = this,
-            onShake = { },
+            // While framing, shake is a quality signal the policy reads via
+            // isShaking. While reading it is the stop control -- the one
+            // gesture that works without finding the screen at all, which
+            // matters when the point is to make the talking stop.
+            onShake = {
+                if (mode.value != Mode.FRAMING && player.isPlaying) {
+                    player.pause()
+                    ttsManager.say("Stopped.")
+                }
+            },
             onStable = { }
         )
 
@@ -131,18 +169,75 @@ class MainActivity : ComponentActivity() {
                         .pointerInput(Unit) {
                             detectTapGestures(onDoubleTap = { takeStill(auto = false) })
                         }
+                        .pointerInput(Unit) {
+                            // Swipe up moves between reading and touch-explore.
+                            // A drag rather than a tap so it cannot be
+                            // triggered by a hand steadying the phone, and it
+                            // is skipped under TalkBack, which owns swipes.
+                            detectVerticalDragGestures { _, delta ->
+                                if (!isTalkBackEnabled() && delta < -SWIPE_THRESHOLD_PX) {
+                                    when (mode.value) {
+                                        Mode.READING -> {
+                                            mode.value = Mode.EXPLORING
+                                            ttsManager.say(
+                                                "Explore mode. Drag a finger over the page."
+                                            )
+                                        }
+                                        Mode.EXPLORING -> {
+                                            mode.value = Mode.READING
+                                            ttsManager.say("Reading mode.")
+                                        }
+                                        Mode.FRAMING -> Unit
+                                    }
+                                }
+                            }
+                        }
                 ) {
-                    if (hasCameraPermission.value) {
-                        AndroidView(
-                            factory = { context ->
-                                PreviewView(context).also(cameraManager::bindCamera)
-                            },
-                            modifier = Modifier.fillMaxSize()
-                        )
-                        PageOverlay(
-                            observation = latestObservation.value,
-                            modifier = Modifier.fillMaxSize()
-                        )
+                    when (mode.value) {
+                        Mode.FRAMING -> if (hasCameraPermission.value) {
+                            AndroidView(
+                                factory = { context ->
+                                    PreviewView(context).also(cameraManager::bindCamera)
+                                },
+                                modifier = Modifier.fillMaxSize()
+                            )
+                            PageOverlay(
+                                observation = latestObservation.value,
+                                modifier = Modifier.fillMaxSize()
+                            )
+                        }
+
+                        Mode.READING -> readingPage.value?.let { page ->
+                            ReadingScreen(
+                                page = page,
+                                currentBlockId = currentBlockId.value,
+                                onTogglePlay = { player.toggle() },
+                                onRepeatBlock = { player.repeatBlock() },
+                                onReadFrom = { block ->
+                                    player.jumpToBlockId(block.id)
+                                    player.play()
+                                },
+                                modifier = Modifier.fillMaxSize(),
+                            )
+                        }
+
+                        Mode.EXPLORING -> readingPage.value?.let { page ->
+                            ExploreScreen(
+                                page = page,
+                                talkBackEnabled = isTalkBackEnabled(),
+                                onRegionEntered = { block ->
+                                    hapticTick()
+                                    ttsManager.say(
+                                        com.pagereader.android.ocr.BlockLabels.title(block)
+                                    )
+                                },
+                                onReadRegion = { block ->
+                                    player.jumpToBlockId(block.id)
+                                    player.play()
+                                },
+                                modifier = Modifier.fillMaxSize(),
+                            )
+                        }
                     }
                     Text(
                         text = debugLine.value,
@@ -150,6 +245,10 @@ class MainActivity : ComponentActivity() {
                             .align(Alignment.TopStart)
                             .statusBarsPadding()
                             .padding(16.dp)
+                            // Developer debug only. Without this the screen
+                            // reader announces it as page content, which is
+                            // noise the actual user cannot act on.
+                            .clearAndSetSemantics { }
                     )
                 }
             }
@@ -368,6 +467,7 @@ class MainActivity : ComponentActivity() {
                 return@runOnUiThread
             }
             lastPageText = result
+            currentCaptureId = lastPage?.page?.let { store.save(it, result)?.id }
             val words = result.textBlocks.sumOf { b -> b.text.split(' ').count { it.isNotBlank() } }
             Log.i(TAG, "ocr: ${result.blocks.size} blocks, $words words, " +
                 "conf=${result.meanConfidence}, ${result.elapsedMs} ms")
@@ -376,16 +476,27 @@ class MainActivity : ComponentActivity() {
             debugLine.value = "read $words words conf=%.2f ocr=%d ms"
                 .format(result.meanConfidence, result.elapsedMs)
 
-            if (result.meanConfidence < OcrPage.USABLE_CONFIDENCE || words == 0) {
-                // Measured over ten pages: everything under 0.60 was genuinely
-                // broken. Saying so is far better than reading nonsense aloud
-                // to someone with no way to tell it is nonsense.
-                ttsManager.say("I could not read this page clearly. Try again with more light, or hold the phone straighter.")
-            } else {
-                // M7 owns reading the text aloud; this confirms the page is
-                // readable so the path is verifiable on device before then.
-                ttsManager.say("Page read. $words words.")
+            // Judge the capture before reading a word of it. Reading a
+            // garbled page to someone who cannot check it against the paper is
+            // worse than asking them to retake.
+            val verdict = CaptureQuality.assess(latestObservation.value, result)
+            lastVerdictWasRetake = !verdict.usable
+            if (!verdict.usable) {
+                verdict.message?.let { ttsManager.say(it) }
+                return@runOnUiThread
             }
+
+            // Ordered so the structure is spoken before the contents: the
+            // summary is what lets someone decide whether to sit through a
+            // page that takes minutes to hear.
+            readingPage.value = result
+            mode.value = Mode.READING
+            player.load(result)
+            ttsManager.say(
+                com.pagereader.android.ocr.BlockLabels.pageSummary(result),
+                flush = true,
+            )
+            player.play()
         }
     }
 
@@ -399,8 +510,21 @@ class MainActivity : ComponentActivity() {
      */
     override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
         return when (keyCode) {
-            KeyEvent.KEYCODE_VOLUME_UP, KeyEvent.KEYCODE_VOLUME_DOWN -> {
-                takeStill(auto = false)
+            // While framing, either key is the shutter. While reading they are
+            // paragraph navigation -- the only controls that need no aim and
+            // stay usable with the phone in a pocket or on a table.
+            KeyEvent.KEYCODE_VOLUME_UP -> {
+                when (mode.value) {
+                    Mode.FRAMING -> takeStill(auto = false)
+                    else -> if (lastVerdictWasRetake) retake() else player.previousBlock()
+                }
+                true
+            }
+            KeyEvent.KEYCODE_VOLUME_DOWN -> {
+                when (mode.value) {
+                    Mode.FRAMING -> takeStill(auto = false)
+                    else -> player.nextBlock()
+                }
                 true
             }
             else -> super.onKeyDown(keyCode, event)
@@ -436,8 +560,50 @@ class MainActivity : ComponentActivity() {
         ttsManager.shutdown()
     }
 
+    /** Which screen is in front. */
+    private enum class Mode { FRAMING, READING, EXPLORING }
+
+    /** True while the last capture was judged unusable, so volume up retakes. */
+    private var lastVerdictWasRetake = false
+
+    /** Back to the camera for another try. */
+    private fun retake() {
+        lastVerdictWasRetake = false
+        player.stop()
+        readingPage.value = null
+        currentCaptureId = null
+        mode.value = Mode.FRAMING
+        policy.reset()
+        ttsManager.say("Ready. Hold the phone over the page.")
+    }
+
+    /**
+     * TalkBack changes what input is possible, so both screens ask before
+     * installing a touch handler that would otherwise fight with it.
+     */
+    private fun isTalkBackEnabled(): Boolean {
+        val am = getSystemService(android.content.Context.ACCESSIBILITY_SERVICE)
+            as? android.view.accessibility.AccessibilityManager ?: return false
+        return am.isEnabled && am.isTouchExplorationEnabled
+    }
+
+    /** A short tick when the finger crosses into a new region. */
+    private fun hapticTick() {
+        window.decorView.performHapticFeedback(
+            android.view.HapticFeedbackConstants.CLOCK_TICK
+        )
+    }
+
     companion object {
         private const val TAG = "PageReader"
+        /**
+         * Vertical drag, in pixels per event, that counts as a swipe.
+         *
+         * Deliberately large: this switches screens, and a blind user's hand
+         * rests on the display constantly. A false positive here is far more
+         * disorienting than a missed swipe, which simply needs repeating.
+         */
+        private const val SWIPE_THRESHOLD_PX = 40f
         private const val LOW_CONFIDENCE = 0.35f
         private const val MODEL_ASSET = "yolov8n_det_256.onnx"
     }

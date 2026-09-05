@@ -24,11 +24,19 @@ import java.util.Locale
  * user was currently being told. Deciding *whether* to speak now belongs
  * entirely to `GuidancePolicy`.
  */
-class TtsManager(private val context: Context) {
+class TtsManager(private val context: Context) : com.pagereader.android.reading.Speaker {
 
     private var tts: TextToSpeech? = null
     private var tone: ToneGenerator? = null
     private var utteranceCounter = 0
+
+    /**
+     * Set by [PagePlayer] via [setOnDone]. Fires on the engine's own callback
+     * thread, so it is hopped to the main thread before the player sees it --
+     * the player and Compose state are main-thread only.
+     */
+    private var onUtteranceDone: ((String) -> Unit)? = null
+    private val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
 
     @Volatile
     private var available = false
@@ -69,6 +77,24 @@ class TtsManager(private val context: Context) {
 
             Log.i(TAG, "TTS ready: $engine / $locale")
             available = true
+            // Utterance callbacks are how continuous reading advances. Without
+            // this the player speaks its first sentence and then waits forever.
+            tts?.setOnUtteranceProgressListener(object : android.speech.tts.UtteranceProgressListener() {
+                override fun onStart(utteranceId: String?) = Unit
+                override fun onDone(utteranceId: String?) {
+                    val id = utteranceId ?: return
+                    mainHandler.post { onUtteranceDone?.invoke(id) }
+                }
+                @Deprecated("required by the platform base class")
+                override fun onError(utteranceId: String?) {
+                    // Treat an error as a finished utterance: the alternative is
+                    // playback stopping dead with no explanation, which to a user
+                    // who cannot see the screen is indistinguishable from a crash.
+                    Log.w(TAG, "utterance $utteranceId failed; advancing anyway")
+                    val id = utteranceId ?: return
+                    mainHandler.post { onUtteranceDone?.invoke(id) }
+                }
+            })
             onReady()
         }
     }
@@ -122,6 +148,27 @@ class TtsManager(private val context: Context) {
         if (!available || text.isBlank()) return
         val mode = if (flush) TextToSpeech.QUEUE_FLUSH else TextToSpeech.QUEUE_ADD
         tts?.speak(text, mode, Bundle(), "pr-${utteranceCounter++}")
+    }
+
+    // --- Speaker, for PagePlayer -----------------------------------------
+
+    override fun speak(text: String, utteranceId: String, flush: Boolean) {
+        if (!available || text.isBlank()) {
+            // Nothing will be spoken, so nothing will report done. Synthesise
+            // one, or continuous reading stalls silently on the first block.
+            mainHandler.post { onUtteranceDone?.invoke(utteranceId) }
+            return
+        }
+        val mode = if (flush) TextToSpeech.QUEUE_FLUSH else TextToSpeech.QUEUE_ADD
+        tts?.speak(text, mode, Bundle(), utteranceId)
+    }
+
+    override fun stop() {
+        tts?.stop()
+    }
+
+    override fun setOnDone(listener: (String) -> Unit) {
+        onUtteranceDone = listener
     }
 
     /** True when an engine and an English voice were both found at init. */
