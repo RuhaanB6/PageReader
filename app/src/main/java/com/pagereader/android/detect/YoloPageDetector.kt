@@ -130,12 +130,11 @@ class YoloPageDetector(
          * costs an upscale; a page with its edge cut off cannot be recovered at
          * all, so the asymmetry justifies erring wide.
          *
-         * Do NOT raise this to make the cue fire when the page leaves the
-         * on-screen preview. The preview is FILL_CENTER on a 4:3 stream in a
-         * 9:20 window, so it hides ~20% of the frame width on each side -- the
-         * camera really does see that page, and matching the screen would throw
-         * away 40% of the usable framing width to warn about nothing. Measured
-         * on device 2026-09-05. Retune on hardware, not by eye.
+         * The preview is FIT_CENTER, so the whole 4:3 frame is on screen and the
+         * visible edge is the real capture edge -- this band can now be judged
+         * by eye against the preview, which was not true when the preview was
+         * FILL_CENTER and hid ~20% of the frame width on each side. Retune on
+         * hardware. Measured on device 2026-09-05.
          */
         private const val BORDER_TOUCH_FRACTION = 0.06f
         private const val BORDER_TOUCH_MIN_PX = 3

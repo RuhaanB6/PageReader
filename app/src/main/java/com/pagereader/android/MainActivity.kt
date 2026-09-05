@@ -308,15 +308,25 @@ class MainActivity : ComponentActivity() {
 
 /**
  * Maps analysis-frame coordinates onto the canvas the way PreviewView's
- * FILL_CENTER lays out the preview: scale uniformly by the *larger* of the two
- * axis ratios so the frame covers the view, then centre it. The overflowing
- * axis gets a negative offset and is cropped, which is what the user sees.
+ * FIT_CENTER lays out the preview: scale uniformly by the *smaller* of the two
+ * axis ratios so the whole frame fits, then centre it. The short axis gets a
+ * positive offset and letterboxes.
  *
- * Using the smaller ratio instead (FIT_CENTER) would letterbox, and the overlay
- * would sit inside the real document boundary rather than on it.
+ * This deliberately mirrors `PreviewView.ScaleType.FIT_CENTER` in
+ * `CameraManager.bindCamera`. **Change one and you must change the other** or
+ * the overlay stops sitting on the real document boundary.
+ *
+ * It used to be FILL_CENTER, matching the preview at the time. That cropped the
+ * 4:3 analysis stream into a 9:20 window and hid ~20% of the frame width on each
+ * side, so a page could be well outside the visible preview while still sitting
+ * comfortably inside the frame the detector and the still capture actually use.
+ * Testing on device on 2026-09-05 that showed up as "the left and right edges
+ * need the page ~40% off before anything is said" -- 40% being exactly the
+ * hidden fraction. Letterboxing shows the true capture area, so what is on
+ * screen is what will be photographed.
  */
 private class FrameTransform(frameWidth: Int, frameHeight: Int, canvas: Size) {
-    val scale: Float = maxOf(canvas.width / frameWidth, canvas.height / frameHeight)
+    val scale: Float = minOf(canvas.width / frameWidth, canvas.height / frameHeight)
     val offsetX: Float = (canvas.width - frameWidth * scale) / 2f
     val offsetY: Float = (canvas.height - frameHeight * scale) / 2f
 

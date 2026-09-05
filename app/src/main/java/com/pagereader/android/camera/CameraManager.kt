@@ -73,7 +73,14 @@ class CameraManager(
         // Stated explicitly rather than relying on the default: the debug
         // overlay's coordinate transform in MainActivity has to mirror this
         // exactly, and a silent default change would misalign it.
-        previewView.scaleType = PreviewView.ScaleType.FILL_CENTER
+        // FIT_CENTER, not FILL_CENTER: the analysis stream is 4:3 and the window
+        // is ~9:20, so filling cropped ~20% of the frame width off each side of
+        // the preview. What the detector sees and what the still captures is the
+        // whole 4:3 frame, so the preview must show all of it -- letterboxed --
+        // or the picture on screen disagrees with the picture being judged.
+        // `MainActivity.FrameTransform` mirrors this exact layout math; change
+        // one and you must change the other.
+        previewView.scaleType = PreviewView.ScaleType.FIT_CENTER
 
         val providerFuture = ProcessCameraProvider.getInstance(context)
         providerFuture.addListener({
