@@ -103,3 +103,85 @@ words *and* no candidate regions.
 Costs a second full pass, a few seconds on the phone. Fix would be to skip the
 retry when the first pass returned no blocks at all, not merely no confident
 ones. Not worth doing until the phone timings for M5 are known.
+
+---
+
+## Deferred from the pre-device review (2026-09-05)
+
+Seven agents reviewed M3–M7 before the first device test. Everything that could
+break or corrupt that test was fixed; these are the P2s that did not justify
+holding it up.
+
+### `capturing` releases at the shutter, not at end of processing
+`open` · `MainActivity`
+
+The flag clears when the camera callback lands, but dewarp and OCR run for
+seconds afterwards. A second capture in that window is safe (the single-thread
+executor serialises it, no data race, no double free) but the user hears a
+second earcon and "Captured. Reading the page." while the first page is still
+being read, then page one loads and is replaced by page two mid-sentence. Fix:
+hold `capturing` until `recogniseOffThread` completes.
+
+### `savePosition` writes a file on the main thread, every sentence
+`open` · `MainActivity` / `CaptureStore`
+
+Documented as "on every block change"; it actually fires per sentence, for
+minutes. The write is dispatched after the TTS call so it is not audible, but
+it is more frequent than intended. Fix: debounce to block boundaries, or update
+the comment.
+
+### `CaptureStore` writes are not atomic
+`open` · `CaptureStore`
+
+`File.writeText` direct, no temp-and-rename, so a kill mid-write can truncate
+`ocr.json` or `state.json`. Degrades correctly rather than corrupting — both
+readers catch and fall back, and `list()` requires `ocr.json` to exist — so the
+worst case is a resumed position resetting to the start of the page.
+
+### `prune()` runs only at startup
+`open` · `MainActivity`
+
+A single session capturing more than 20 pages grows unbounded until the next
+launch. Same shape as the `SessionRecorder` retention gap above.
+
+### `Sentences` cannot split a run with no whitespace at all
+`open` · `Sentences`
+
+The length-based break needs a whitespace character to cut on, so OCR output
+that drops every space across a column becomes one unbounded utterance that
+cannot be paused part-way. Rare; the sentence-terminator path handles ordinary
+text.
+
+### `orderCorners` assumes a convex quad
+`open` · `MaskToQuad`
+
+The sum/diff extremes correctly label corners for any convex quadrilateral. A
+concave four-point approximation — a finger over a corner, an L-shaped mask —
+could produce a self-crossing TL/TR/BR/BL assignment that the area and
+edge-length checks would not catch. Theoretical for rectangular paper, and
+`MIN_RECTANGULARITY` plus `MIN_REFINE_BOX_COVERAGE` both reduce the odds.
+Defence in depth: add a cross-product sign check.
+
+### `ExploreScreen` has no `isTraversalGroup`
+`open` · `ExploreScreen`
+
+Unlike `ReadingScreen`. Probably harmless as the region nodes are flat
+siblings, but it is unverified whether TalkBack's own touch-exploration
+reproduces the "smallest region wins" rule the manual hit-test implements for
+the non-TalkBack path. Check on a real page with a caption inside a figure.
+
+### No spoken onboarding for the reading gestures
+`open`
+
+The page summary now ends with "Double tap for the next page", but tap,
+long-press, swipe-up, the volume keys and shake are undocumented in speech. A
+first-run explanation would help; it needs a real user to know what is actually
+confusing before writing it.
+
+### `-openmp` Tesseract variant unproven on this hardware
+`watch` · first device run
+
+`-openmp` builds have a history of `UnsatisfiedLinkError` on some ARM devices
+if `libomp.so` does not resolve. It cannot go silent — `TesseractOcr.create`
+degrades to a spoken "I cannot read text on this device" — but watch the
+`TesseractOcr` tag on the first run.
