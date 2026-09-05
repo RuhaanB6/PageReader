@@ -55,6 +55,7 @@ object HocrParser {
         var confSum = 0.0
         var confCount = 0
         val wordHeights = mutableListOf<Int>()
+        var lineCount = 0
 
         // State for the word currently open, since the confidence lives on the
         // span's title and the text is its content.
@@ -77,6 +78,7 @@ object HocrParser {
                     confidence = if (confCount == 0) 0f else (confSum / confCount / 100.0).toFloat(),
                     kind = blockKind,
                     medianWordHeight = median(wordHeights),
+                    lineCount = lineCount,
                 )
             }
             inBlock = false
@@ -87,6 +89,7 @@ object HocrParser {
             confSum = 0.0
             confCount = 0
             wordHeights.clear()
+            lineCount = 0
         }
 
         var event = xpp.eventType
@@ -124,7 +127,9 @@ object HocrParser {
                             blockBbox = bboxOf(title)
                             inBlock = blockBbox != null
                         }
+                        cls == "ocr_line" -> lineCount++
                         cls != null && cls in LINE_KINDS -> {
+                            lineCount++
                             // Most specific line class wins for the whole block.
                             val kind = LINE_KINDS.getValue(cls)
                             val specificity = SPECIFICITY.getValue(kind)

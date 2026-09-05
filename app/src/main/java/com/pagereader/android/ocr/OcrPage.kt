@@ -33,6 +33,11 @@ enum class BlockKind {
  * @property confidence 0..1, the mean of the hOCR `x_wconf` values.
  * @property medianWordHeight used by M6 to promote large text to a heading;
  *   0 when there are no words.
+ * @property lineCount how many text lines the block holds. Counted from the
+ *   hOCR line spans rather than estimated from box height later, because line
+ *   spacing varies enough between documents that dividing height by word
+ *   height guesses wrong on exactly the short blocks the heading rule cares
+ *   about.
  */
 data class TextBlock(
     val id: Int,
@@ -42,6 +47,7 @@ data class TextBlock(
     val confidence: Float,
     val kind: BlockKind,
     val medianWordHeight: Float,
+    val lineCount: Int = 0,
 )
 
 /**

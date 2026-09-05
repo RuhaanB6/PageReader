@@ -371,7 +371,9 @@ class MainActivity : ComponentActivity() {
             val words = result.textBlocks.sumOf { b -> b.text.split(' ').count { it.isNotBlank() } }
             Log.i(TAG, "ocr: ${result.blocks.size} blocks, $words words, " +
                 "conf=${result.meanConfidence}, ${result.elapsedMs} ms")
-            debugLine.value = "read $words words conf=%.2f in %d ms"
+            // "ocr" is processing time; the spoken summary quotes listening
+            // time. Labelled so the two are never read as the same number.
+            debugLine.value = "read $words words conf=%.2f ocr=%d ms"
                 .format(result.meanConfidence, result.elapsedMs)
 
             if (result.meanConfidence < OcrPage.USABLE_CONFIDENCE || words == 0) {
