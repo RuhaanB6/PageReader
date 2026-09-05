@@ -5,6 +5,7 @@ import com.pagereader.android.detect.PageObservation
 import com.pagereader.android.detect.Pt
 import com.pagereader.android.detect.Side
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -221,5 +222,64 @@ class GuidancePolicyTest {
         assertEquals(listOf(Instruction.STRAIGHTEN), spoken)
         // Under the trigger, nothing is said about a slightly crooked page.
         assertTrue(run(GuidancePolicy(), frames = 10) { obs(tilt = 10f) }.isEmpty())
+    }
+
+    // ---- capture must not fire while a correction is in flight (device bug, 2026-09-05)
+
+    /**
+     * A clipped page is never a good capture, however confident the detector is:
+     * part of the page is outside the photo. Regression test for a device session
+     * that captured at clip=LEFT and clip=RIGHT and only then said "Move left".
+     */
+    @Test
+    fun captureNeverFiresWhileThePageIsClipped() {
+        val policy = GuidancePolicy()
+        var captured = false
+        for (i in 0 until 40) {
+            val d = policy.update(
+                obs(clipped = setOf(Side.LEFT)), isShaking = false, nowMs = i * 200L,
+            )
+            if (d.capture) captured = true
+        }
+        assertFalse("clipped page must never auto-capture", captured)
+    }
+
+    /**
+     * The window this actually failed in: an instruction is pending but has not
+     * yet survived dwellFrames, so `active` is still null. The steady timer must
+     * reset on the pending correction, not only on the confirmed one.
+     */
+    @Test
+    fun captureNeverFiresInTheDwellWindowOfANewCorrection() {
+        val policy = GuidancePolicy()
+        // Settle: well framed for long enough that a capture has already fired.
+        var first = false
+        for (i in 0 until 12) {
+            if (policy.update(obs(), isShaking = false, nowMs = i * 200L).capture) first = true
+        }
+        assertTrue("a clean, steady page should capture", first)
+
+        // Now drift off the edge. For the next few frames the cue is only pending.
+        var capturedWhileDrifting = false
+        for (i in 12 until 40) {
+            val d = policy.update(
+                obs(clipped = setOf(Side.RIGHT), cx = 560.0),
+                isShaking = false, nowMs = i * 200L,
+            )
+            if (d.capture) capturedWhileDrifting = true
+        }
+        assertFalse("must not capture once the page starts leaving frame",
+            capturedWhileDrifting)
+    }
+
+    /** The gate must not be so tight that a good page stops capturing at all. */
+    @Test
+    fun aCleanSteadyPageStillCaptures() {
+        val policy = GuidancePolicy()
+        var captured = false
+        for (i in 0 until 20) {
+            if (policy.update(obs(), isShaking = false, nowMs = i * 200L).capture) captured = true
+        }
+        assertTrue("a clean centred page must still auto-capture", captured)
     }
 }

@@ -132,12 +132,29 @@ class GuidancePolicy(private val config: Config = Config()) {
         }
 
         // Capture gating: only once everything is resolved and the page is there.
+        //
+        // "Resolved" has to mean *pending as well as active*. An instruction only
+        // becomes `active` after surviving dwellFrames, so between a page starting
+        // to run off the edge and the cue being confirmed there is a window --
+        // 3 frames, ~400 ms on device -- where `active` is still null and the
+        // steady timer is still running. Gating on `active` alone fired the
+        // shutter inside that window and then said "Move left" 0.2 s after the
+        // photo. Observed on device 2026-09-05: captures at clip=LEFT and
+        // clip=RIGHT, each followed by its own correction.
+        //
+        // `clipped` is checked directly rather than via the instruction because it
+        // is a topological fact about the mask, not a debounced opinion: if the
+        // page touches the frame border then part of the page is not in the photo,
+        // and no amount of confidence makes that a good capture.
+        val correctionPending = pending != null && pending != Instruction.NO_PAGE
+        val clipped = observation?.clipped?.isNotEmpty() == true
+
         var capture = false
         val state: FramingState
         if (!hasPage) {
             framedSinceMs = null
             state = FramingState.SEARCHING
-        } else if (active != null) {
+        } else if (active != null || correctionPending || clipped) {
             framedSinceMs = null
             captureFired = false
             state = FramingState.ADJUSTING
