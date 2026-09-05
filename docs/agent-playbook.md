@@ -217,3 +217,43 @@ each; finding the right few lines was the hard part.
 
 Delegate the mechanical parts to a cheaper model via subagents (audits, sweeps,
 fixture generation) and keep the diagnosis in the main session.
+
+---
+
+## 9. The emulator, and what it is worth
+
+Set up 2026-09-05. The old rule said the app would not run on an emulator; that
+was about **x86**, which `abiFilters` excludes. The dev machine is Apple Silicon,
+so an **arm64-v8a** image runs it with the build untouched.
+
+```bash
+~/Library/Android/sdk/emulator/emulator -avd pagereader-arm64 \
+  -no-window -no-audio -gpu swiftshader_indirect -port 5556 &
+adb -s emulator-5556 install -r app/build/outputs/apk/debug/app-debug.apk
+adb -s emulator-5556 shell am instrument -w \
+  com.pagereader.android.test/androidx.test.runner.AndroidJUnitRunner
+```
+
+The AVD is android-36 `default` (AOSP), deliberately **not** `google_apis`: the
+target phone has no GMS, and a Play-Services image would let a GMS dependency
+pass unnoticed until it reached hardware.
+
+**What it buys.** All 33 instrumented tests pass there in 6 s against 55 s on the
+phone. No PowerGenie freeze, no `adb install` dialog needing a human, and the
+device is free for someone to hold. For the fixture-driven suite it is strictly
+better, and it is the right way to build out an MVP before the tedious part.
+
+**What it costs, and this is the trap.** It is roughly **10x faster than the
+phone** — YOLO forward 9 ms against 88, colour detect 2 ms against 21. A
+performance decision made there is not just imprecise, it is wrong in the
+direction that matters: the full-resolution illumination blur that really costs
+249 ms/frame would measure ~25 ms and look perfectly affordable. Timing goes on
+hardware, always.
+
+Camera and TTS are the other line. The emulated camera produces synthetic
+frames, so guidance, framing and capture behaviour mean nothing there. Every bug
+that has actually cost this project time — the shadow across the page, the
+FILL_CENTER crop, cues firing late — was visible only on a real page.
+
+Rule of thumb: **emulator to know the code is correct, phone to know the product
+works.**
