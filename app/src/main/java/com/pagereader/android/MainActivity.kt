@@ -37,9 +37,12 @@ import com.pagereader.android.detect.YoloDnnEngine
 import com.pagereader.android.detect.YoloPageDetector
 import com.pagereader.android.guidance.GuidancePolicy
 import com.pagereader.android.guidance.ShakeDetector
+import com.pagereader.android.dewarp.DewarpResult
+import com.pagereader.android.dewarp.PageDewarper
 import com.pagereader.android.telemetry.SessionRecorder
 import com.pagereader.android.ui.theme.PageReaderTheme
 import org.opencv.android.OpenCVLoader
+import java.util.concurrent.Executors
 
 class MainActivity : ComponentActivity() {
 
@@ -57,7 +60,24 @@ class MainActivity : ComponentActivity() {
 
     /** Guards against a second shutter while one is already in flight. */
     private var capturing = false
-    private var lastCapture: org.opencv.core.Mat? = null
+    private var lastPage: DewarpResult? = null
+
+    /**
+     * Post-capture work runs here, never on the main thread: re-detecting on
+     * the still and warping a multi-megapixel image is a few hundred
+     * milliseconds, and the shutter callback arrives on the main thread.
+     */
+    private val captureExecutor = Executors.newSingleThreadExecutor()
+
+    /**
+     * A second detector, for stills only.
+     *
+     * It cannot share the analysis detector: `cv::dnn::Net` is not thread-safe
+     * and preview frames keep flowing during a capture, so one engine would be
+     * used from two threads at once. Built on first capture rather than at
+     * startup, so the ~12 MB is only paid by a session that actually shoots.
+     */
+    private val stillDewarper: PageDewarper by lazy { PageDewarper(buildDetector()) }
 
     private val cameraPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
@@ -234,13 +254,13 @@ class MainActivity : ComponentActivity() {
             cameraManager.capture(
                 onResult = { mat ->
                     capturing = false
-                    lastCapture?.release()
-                    lastCapture = mat
                     Log.i(TAG, "captured ${mat.width()}x${mat.height()} (auto=$auto)")
-                    // M4 takes over here: re-detect the quad on the still, then
-                    // dewarp. Until then the still is held so its size can be
-                    // read off the debug line and the path verified on device.
                     debugLine.value = "captured ${mat.width()}x${mat.height()}"
+                    // Ownership of `mat` passes to the executor, which releases
+                    // it. Holding it in a field instead would let the next
+                    // capture free it from the main thread while the dewarp
+                    // thread is still reading it.
+                    dewarpOffThread(mat)
                 },
                 onFailure = { message ->
                     capturing = false
@@ -255,6 +275,43 @@ class MainActivity : ComponentActivity() {
             capturing = false
             Log.e(TAG, "capture threw", t)
             ttsManager.say("The camera failed. Try again.")
+        }
+    }
+
+    /**
+     * Flattens the still into a head-on page, off the main thread.
+     *
+     * Speaks only on failure. Success is already covered by the "Reading the
+     * page" said at the shutter, and an extra confirmation between the earcon
+     * and the text would just delay the thing the user actually wants. Failure
+     * has to be spoken because the fallback -- reading the whole photo,
+     * background and all -- produces worse text for a reason the user cannot
+     * see.
+     */
+    private fun dewarpOffThread(still: org.opencv.core.Mat) {
+        captureExecutor.execute {
+            val result = try {
+                stillDewarper.dewarp(still)
+            } catch (t: Throwable) {
+                // Never strand the user in silence: fall back to the whole
+                // frame rather than letting the pipeline stop here.
+                Log.e(TAG, "dewarp threw", t)
+                DewarpResult(still.clone(), applied = false, homography = null)
+            } finally {
+                still.release()
+            }
+            runOnUiThread {
+                lastPage?.release()
+                lastPage = result
+                val p = result.page
+                Log.i(TAG, "page ${p.width()}x${p.height()} applied=${result.applied}")
+                debugLine.value =
+                    "page ${p.width()}x${p.height()} ${if (result.applied) "dewarped" else "RAW"}"
+                if (!result.applied) {
+                    ttsManager.say("I could not find the page edges, so I am reading the whole photo.")
+                }
+                // M5 takes over here: OCR runs on `lastPage`.
+            }
         }
     }
 
@@ -293,8 +350,9 @@ class MainActivity : ComponentActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
-        lastCapture?.release()
-        lastCapture = null
+        captureExecutor.shutdown()
+        lastPage?.release()
+        lastPage = null
         recorder.stop()
         ttsManager.shutdown()
     }
