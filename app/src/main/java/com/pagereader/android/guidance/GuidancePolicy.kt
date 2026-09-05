@@ -62,6 +62,27 @@ class GuidancePolicy(private val config: Config = Config()) {
         val noPageAfterMs: Long = 5_000L,
         /** Framed and steady for this long before capture fires. */
         val steadyHoldMs: Long = 800L,
+
+        /**
+         * No second auto-capture within this long of the last one.
+         *
+         * The latch used to reopen on a single ADJUSTING frame, so one page
+         * could fire two shutters ~1.3 s apart -- harmless while nothing
+         * happened after a capture, but once the page is read aloud the second
+         * shutter restarts the reading from the top mid-sentence, with no
+         * visible cause for someone who cannot see the screen. A capture is
+         * also the moment the user relaxes their grip, which is exactly when
+         * framing wobbles and the latch would otherwise reopen.
+         */
+        val captureRefractoryMs: Long = 4_000L,
+
+        /**
+         * Consecutive non-framed observations before the latch reopens.
+         *
+         * Mirrors [dwellFrames]: losing framing for a single noisy frame should
+         * no more re-arm the shutter than it should make the app talk.
+         */
+        val captureReleaseFrames: Int = 3,
     )
 
     data class Decision(
@@ -83,6 +104,8 @@ class GuidancePolicy(private val config: Config = Config()) {
     private var lastSeenMs: Long? = null
     private var framedSinceMs: Long? = null
     private var captureFired = false
+    private var captureFiredAtMs: Long? = null
+    private var unframedRun = 0
 
     /** Call after a capture completes, or when returning to the camera. */
     fun reset() {
@@ -92,6 +115,8 @@ class GuidancePolicy(private val config: Config = Config()) {
         lastSeenMs = null
         framedSinceMs = null
         captureFired = false
+        captureFiredAtMs = null
+        unframedRun = 0
     }
 
     fun update(observation: PageObservation?, isShaking: Boolean, nowMs: Long): Decision {
@@ -153,17 +178,20 @@ class GuidancePolicy(private val config: Config = Config()) {
         val state: FramingState
         if (!hasPage) {
             framedSinceMs = null
+            releaseLatchIfSettled(nowMs)
             state = FramingState.SEARCHING
         } else if (active != null || correctionPending || clipped) {
             framedSinceMs = null
-            captureFired = false
+            releaseLatchIfSettled(nowMs)
             state = FramingState.ADJUSTING
         } else {
+            unframedRun = 0
             val since = framedSinceMs ?: nowMs.also { framedSinceMs = it }
             if (nowMs - since >= config.steadyHoldMs) {
                 state = FramingState.STEADY
                 if (!captureFired) {
                     captureFired = true
+                    captureFiredAtMs = nowMs
                     capture = true
                 }
             } else {
@@ -172,6 +200,26 @@ class GuidancePolicy(private val config: Config = Config()) {
         }
 
         return Decision(state, active, utterance, capture)
+    }
+
+    /**
+     * Re-arms auto-capture, but only once framing has genuinely been given up.
+     *
+     * Two conditions, and both are needed. The refractory window stops a
+     * second shutter while the first capture is still being handled, and the
+     * run of consecutive unframed observations stops a single wobble --
+     * typically the user's own hand relaxing right after the shutter -- from
+     * counting as "they are framing a new page".
+     */
+    private fun releaseLatchIfSettled(nowMs: Long) {
+        if (!captureFired) return
+        unframedRun++
+        val firedAt = captureFiredAtMs
+        if (firedAt != null && nowMs - firedAt < config.captureRefractoryMs) return
+        if (unframedRun < config.captureReleaseFrames) return
+        captureFired = false
+        captureFiredAtMs = null
+        unframedRun = 0
     }
 
     /**

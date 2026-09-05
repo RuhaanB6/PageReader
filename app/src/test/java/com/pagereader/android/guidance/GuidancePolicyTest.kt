@@ -282,4 +282,83 @@ class GuidancePolicyTest {
         }
         assertTrue("a clean centred page must still auto-capture", captured)
     }
+
+    /**
+     * Counts the updates on which auto-capture fired, over [frames] steps at
+     * 200ms, so double-shutter regressions show up as a number.
+     */
+    private fun captures(
+        policy: GuidancePolicy,
+        frames: Int,
+        observation: (Int) -> PageObservation?,
+    ): List<Long> {
+        val fired = mutableListOf<Long>()
+        for (i in 0 until frames) {
+            val now = i * 200L
+            if (policy.update(observation(i), isShaking = false, nowMs = now).capture) fired += now
+        }
+        return fired
+    }
+
+    /**
+     * One page must produce one shutter.
+     *
+     * The latch used to reopen on a single ADJUSTING frame, so a momentary
+     * wobble -- which is exactly what a hand does the instant after a capture
+     * -- fired a second shutter about 1.3 s later. Harmless until the page is
+     * read aloud, at which point it restarts the reading from the top
+     * mid-sentence for no reason the user can perceive.
+     */
+    @Test
+    fun `a single wobble after capture does not fire a second shutter`() {
+        val policy = GuidancePolicy()
+        // Framed throughout except one clipped frame shortly after the capture.
+        val fired = captures(policy, 40) { i ->
+            if (i == 12) obs(clipped = setOf(Side.LEFT)) else obs()
+        }
+        assertEquals("expected exactly one capture, got $fired", 1, fired.size)
+    }
+
+    /** Sustained clipping is not enough either, while the refractory window holds. */
+    @Test
+    fun `losing framing briefly inside the refractory window does not re-arm`() {
+        val policy = GuidancePolicy()
+        val fired = captures(policy, 40) { i ->
+            if (i in 10..14) obs(clipped = setOf(Side.LEFT)) else obs()
+        }
+        assertEquals("expected exactly one capture, got $fired", 1, fired.size)
+    }
+
+    /**
+     * The happy path, which is the failure mode of this fix: "never capture
+     * twice" must not become "never capture again". A genuinely new page --
+     * framing given up for well past the refractory window -- has to shoot.
+     */
+    @Test
+    fun `a genuinely new page captures again after the refractory window`() {
+        val policy = GuidancePolicy()
+        // Framed, then nothing at all for 6s (past captureRefractoryMs), then
+        // framed again: the user lowered the phone and lifted a second sheet.
+        val fired = captures(policy, 90) { i ->
+            when {
+                i < 20 -> obs()
+                i < 55 -> null
+                else -> obs()
+            }
+        }
+        assertEquals("expected two captures, got $fired", 2, fired.size)
+        assertTrue(
+            "second capture at ${fired[1]} should be well after the first at ${fired[0]}",
+            fired[1] - fired[0] >= 4_000L,
+        )
+    }
+
+    /** reset() is called after a capture completes; it must fully re-arm. */
+    @Test
+    fun `reset re-arms the shutter immediately`() {
+        val policy = GuidancePolicy()
+        assertEquals(1, captures(policy, 20) { obs() }.size)
+        policy.reset()
+        assertEquals(1, captures(policy, 20) { obs() }.size)
+    }
 }

@@ -15,7 +15,15 @@ Status: `open` · `fixed <date>` · `wontfix <reason>`
 ## Guidance and capture
 
 ### Double capture — one page fires two shutters
-`open` · found 2026-09-05 · `MainActivity` / capture latch
+`fixed 2026-09-05` · `GuidancePolicy`
+
+Fixed ahead of M5, since that is where it becomes user-visible. The latch now
+needs both a 4 s refractory window and `captureReleaseFrames` consecutive
+unframed observations before re-arming, so the hand-wobble that follows a
+shutter cannot re-trigger it. Guarded by three tests including the happy path
+(a genuinely new page must still capture), all verified to fail without the fix.
+
+Original report:
 
 `captureFired` clears on a single `ADJUSTING` frame, so one page can produce two
 shutters about 1.3 s apart. Harmless today. **Becomes user-visible at M5**: once
