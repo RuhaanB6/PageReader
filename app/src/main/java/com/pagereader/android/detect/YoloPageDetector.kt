@@ -56,7 +56,27 @@ class YoloPageDetector(
         val clipped = clippedSides(best.box, box, frameW, frameH)
         val coverage = (box.width.toFloat() * box.height) / (frameW.toFloat() * frameH)
 
-        val usable = refined?.quad != null && refined.confidence > MIN_REFINE_CONFIDENCE
+        // The network says the page is `box`. If colour comes back with a shape
+        // covering much less than that, colour is wrong -- not the network --
+        // and the box is the safer answer.
+        //
+        // This is the gate that catches a *cut mask*, which the fit itself
+        // cannot: when the phone's own shadow falls across the sheet the
+        // shadowed part fails the brightness test, the contour stops at the
+        // shadow, and MaskToQuad then fits that truncated contour faithfully.
+        // The resulting quad is internally consistent and looks fine next to its
+        // own contour -- it is only wrong relative to the whole page. Measured
+        // on device 2026-09-05: the bad quads covered 0.71 of their box while
+        // discarding the left third of the page, margin and line-starts
+        // included. Feeding that to the dewarp would crop the text permanently,
+        // which is far worse than not rectifying at all.
+        val coverageOfBox = refined?.quad?.let { quadArea(it) / (box.width.toDouble() * box.height) }
+        val usable = refined?.quad != null &&
+            refined.confidence > MIN_REFINE_CONFIDENCE &&
+            (coverageOfBox ?: 0.0) >= MIN_REFINE_BOX_COVERAGE
+        if (refined?.quad != null && (coverageOfBox ?: 0.0) < MIN_REFINE_BOX_COVERAGE) {
+            Log.w(TAG, "colour quad covers only ${"%.2f".format(coverageOfBox)} of the box; using the box")
+        }
         return if (usable) {
             refined!!.copy(
                 // The network decides whether this is a page; colour only decides
@@ -86,6 +106,17 @@ class YoloPageDetector(
         Pt((x + width).toDouble(), (y + height).toDouble()),
         Pt(x.toDouble(), (y + height).toDouble()),
     )
+
+    /** Shoelace area of a quad in frame pixels. */
+    private fun quadArea(q: List<Pt>): Double {
+        var sum = 0.0
+        for (i in q.indices) {
+            val a = q[i]
+            val b = q[(i + 1) % q.size]
+            sum += a.x * b.y - b.x * a.y
+        }
+        return kotlin.math.abs(sum) / 2.0
+    }
 
     /**
      * Which frame borders the page runs off.
@@ -141,5 +172,15 @@ class YoloPageDetector(
 
         /** Below this the refined quad is not trusted and the box is used instead. */
         private const val MIN_REFINE_CONFIDENCE = 0.2f
+
+        /**
+         * A refined quad must cover at least this fraction of the network's box
+         * to be trusted. 0.80 rejects roughly 40% taper and above; the bad quads
+         * measured on device sat at 0.71. A genuinely tilted page loses area
+         * against its own bounding box too, so this also rejects extreme slant --
+         * which is the right call, since that slant is bad for OCR anyway and
+         * the box keeps the whole page. Retune on hardware.
+         */
+        private const val MIN_REFINE_BOX_COVERAGE = 0.80
     }
 }

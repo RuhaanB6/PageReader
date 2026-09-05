@@ -2,6 +2,7 @@ package com.pagereader.android.detect
 
 import org.opencv.core.Core
 import org.opencv.core.CvType
+import androidx.annotation.VisibleForTesting
 import org.opencv.core.Mat
 import org.opencv.core.Rect
 import org.opencv.core.Scalar
@@ -41,6 +42,15 @@ class ColorPageDetector(
      * @param roi optional restriction in [bgr] coordinates -- pass the neural
      *   detector's box to solve the much easier local problem.
      */
+    /**
+     * Debug-only: invoked with the thresholded mask on every [detect], before
+     * corner fitting. Set by diagnostic tests to separate "the mask was wrong"
+     * from "the mask was right and the quad fit was wrong". Never set in
+     * production.
+     */
+    @VisibleForTesting
+    var maskProbe: ((Mat) -> Unit)? = null
+
     override fun detect(bgr: Mat, roi: Rect?): PageObservation {
         val frameW = bgr.width()
         val frameH = bgr.height()
@@ -74,6 +84,12 @@ class ColorPageDetector(
             }
 
             val confidence = separationConfidence(paperness, mask, otsu)
+
+            // Diagnostic seam. The mask and the quad fitted from it fail in
+            // different ways and look identical from outside, so this hands the
+            // binary mask to a test before MaskToQuad sees it. Null in
+            // production; nothing is retained and the Mat stays owned here.
+            maskProbe?.invoke(mask)
 
             return MaskToQuad.convert(
                 mask = mask,
