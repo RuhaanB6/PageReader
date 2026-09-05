@@ -38,6 +38,8 @@ import com.pagereader.android.detect.YoloPageDetector
 import com.pagereader.android.guidance.GuidancePolicy
 import com.pagereader.android.guidance.ShakeDetector
 import com.pagereader.android.dewarp.DewarpResult
+import com.pagereader.android.ocr.OcrPage
+import com.pagereader.android.ocr.TesseractOcr
 import com.pagereader.android.dewarp.PageDewarper
 import com.pagereader.android.telemetry.SessionRecorder
 import com.pagereader.android.ui.theme.PageReaderTheme
@@ -78,6 +80,17 @@ class MainActivity : ComponentActivity() {
      * startup, so the ~12 MB is only paid by a session that actually shoots.
      */
     private val stillDewarper: PageDewarper by lazy { PageDewarper(buildDetector()) }
+
+    /**
+     * Built on the capture thread, on first use, and never touched from
+     * anywhere else -- `TessBaseAPI` holds native state and is not thread-safe.
+     * Null means the language data could not be prepared, which degrades to
+     * "cannot read" rather than crashing.
+     */
+    private var ocr: TesseractOcr? = null
+    private var ocrUnavailable = false
+    private var lastPageText: OcrPage? = null
+    private var lastProgressSpokenAt = 0
 
     private val cameraPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
@@ -310,7 +323,66 @@ class MainActivity : ComponentActivity() {
                 if (!result.applied) {
                     ttsManager.say("I could not find the page edges, so I am reading the whole photo.")
                 }
-                // M5 takes over here: OCR runs on `lastPage`.
+            }
+            recogniseOffThread(result)
+        }
+    }
+
+    /**
+     * Reads the page, on the same background thread the dewarp just used.
+     *
+     * Recognition takes seconds. To someone who cannot see a spinner that
+     * silence is indistinguishable from a crash, so progress is spoken at
+     * intervals rather than left blank -- coarse on purpose, because a number
+     * every 1% would be worse than saying nothing.
+     */
+    private fun recogniseOffThread(page: DewarpResult) {
+        if (ocrUnavailable) return
+        val engine = ocr ?: TesseractOcr.create(this) { percent ->
+            // Called on this thread by Tesseract; hop to main to speak.
+            val bucket = percent / 25
+            if (bucket > lastProgressSpokenAt) {
+                lastProgressSpokenAt = bucket
+                runOnUiThread { ttsManager.say("$percent percent", flush = false) }
+            }
+        }?.also { ocr = it }
+
+        if (engine == null) {
+            ocrUnavailable = true
+            Log.e(TAG, "OCR unavailable; language data could not be prepared")
+            runOnUiThread { ttsManager.say("I cannot read text on this device.") }
+            return
+        }
+
+        lastProgressSpokenAt = 0
+        val result = try {
+            engine.recognise(page.page)
+        } catch (t: Throwable) {
+            Log.e(TAG, "recognition threw", t)
+            null
+        }
+
+        runOnUiThread {
+            if (result == null) {
+                ttsManager.say("Something went wrong reading the page. Try again.")
+                return@runOnUiThread
+            }
+            lastPageText = result
+            val words = result.textBlocks.sumOf { b -> b.text.split(' ').count { it.isNotBlank() } }
+            Log.i(TAG, "ocr: ${result.blocks.size} blocks, $words words, " +
+                "conf=${result.meanConfidence}, ${result.elapsedMs} ms")
+            debugLine.value = "read $words words conf=%.2f in %d ms"
+                .format(result.meanConfidence, result.elapsedMs)
+
+            if (result.meanConfidence < OcrPage.USABLE_CONFIDENCE || words == 0) {
+                // Measured over ten pages: everything under 0.60 was genuinely
+                // broken. Saying so is far better than reading nonsense aloud
+                // to someone with no way to tell it is nonsense.
+                ttsManager.say("I could not read this page clearly. Try again with more light, or hold the phone straighter.")
+            } else {
+                // M7 owns reading the text aloud; this confirms the page is
+                // readable so the path is verifiable on device before then.
+                ttsManager.say("Page read. $words words.")
             }
         }
     }
@@ -346,11 +418,16 @@ class MainActivity : ComponentActivity() {
     override fun onPause() {
         super.onPause()
         shakeDetector.stop()
+        // Interrupt a recognition in flight rather than leaving it running
+        // against a page the user has walked away from.
+        ocr?.stop()
     }
 
     override fun onDestroy() {
         super.onDestroy()
         captureExecutor.shutdown()
+        ocr?.close()
+        ocr = null
         lastPage?.release()
         lastPage = null
         recorder.stop()

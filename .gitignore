@@ -56,3 +56,6 @@ runs/
 /HANDOFF-*.md
 /HANDOFF-*.py
 models-archive/
+
+# Tesseract language data -- fetch with tools/fetch-tessdata.sh
+app/src/main/assets/tessdata/

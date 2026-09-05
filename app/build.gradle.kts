@@ -28,6 +28,14 @@ android {
         }
     }
 
+    androidResources {
+        // Leave the language data uncompressed. AAPT would otherwise deflate
+        // it, which costs an inflate on every install for no size win (it is
+        // already a compact binary model) and, more to the point, makes
+        // AssetManager.openFd fail on it -- "probably compressed".
+        noCompress += "traineddata"
+    }
+
     buildTypes {
         release {
             optimization {
@@ -63,6 +71,13 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.0")
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.0")
     implementation("org.opencv:opencv:4.9.0")
+    // OCR. The -openmp variant is faster on multi-core with a single engine
+    // instance, which is exactly our usage (TessBaseAPI is not thread-safe, so
+    // there is one instance on one background thread). Its only transitive
+    // dependency is androidx.annotation -- no GMS, which the target phone
+    // does not have. The AAR is 12.8 MB across all ABIs, roughly halved by
+    // the abiFilters above.
+    implementation("cz.adaptech.tesseract4android:tesseract4android-openmp:4.9.0")
 
     testImplementation(libs.junit)
     androidTestImplementation(platform(libs.androidx.compose.bom))

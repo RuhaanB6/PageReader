@@ -90,3 +90,16 @@ A σ=241 Gaussian asks OpenCV for a ~2900-tap kernel on a 640×480 image and
 aborts natively *after* the test has passed and logged, which reads as a crash.
 Variant dropped. Worth remembering as a shape: a native abort in teardown looks
 like a failing test but the results are already in logcat.
+
+### A blank page costs two OCR passes
+`open` · found 2026-09-05 · `TesseractOcr.recognise`
+
+The rotation retry triggers on low confidence, and a page with no text at all
+scores 0.0 — so a blank or unreadable capture is recognised twice before being
+reported as unreadable. Correct in general (text can be entirely unrecognised at
+0° and fine at 90°) but wasteful in the one case where the first pass found no
+words *and* no candidate regions.
+
+Costs a second full pass, a few seconds on the phone. Fix would be to skip the
+retry when the first pass returned no blocks at all, not merely no confident
+ones. Not worth doing until the phone timings for M5 are known.
