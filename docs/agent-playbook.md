@@ -243,12 +243,34 @@ phone. No PowerGenie freeze, no `adb install` dialog needing a human, and the
 device is free for someone to hold. For the fixture-driven suite it is strictly
 better, and it is the right way to build out an MVP before the tedious part.
 
-**What it costs, and this is the trap.** It is roughly **10x faster than the
-phone** — YOLO forward 9 ms against 88, colour detect 2 ms against 21. A
-performance decision made there is not just imprecise, it is wrong in the
-direction that matters: the full-resolution illumination blur that really costs
-249 ms/frame would measure ~25 ms and look perfectly affordable. Timing goes on
-hardware, always.
+**What it costs, and this is the trap.** The suite runs 9x faster, which invites
+treating ~10x as a conversion factor. It is not one. `HostRatioBenchmarkTest`
+measures the ratio per class of work and it spans **1.3x to 16.5x**:
+
+| operation | phone | emulator | ratio |
+|---|---|---|---|
+| `clone` 4000x3000 (bandwidth) | 7.9 ms | 6.2 ms | 1.3x |
+| sustained `cvtColor`, 8 s | — | — | 2.6x |
+| `warpPerspective` -> 2000 px | 54.4 ms | 16.9 ms | 3.2x |
+| `cvtColor` BGR2Lab | 3.1 ms | 0.9 ms | 3.3x |
+| `imdecode` JPEG | 5.2 ms | 1.2 ms | 4.4x |
+| `mean` over 4000x3000 | 27.6 ms | 6.0 ms | 4.6x |
+| **wide `GaussianBlur` s=51** | **296 ms** | **18 ms** | **16.5x** |
+
+The spread is structural, not noise: the Mac's advantage is compute and cache,
+not memory bandwidth, so which one an operation leans on sets its ratio. Note
+the worst case is the wide blur — the exact operation behind `ILLUM_DOWNSCALE`.
+The emulator is least trustworthy precisely where the decision mattered most.
+
+It hides variance too. That blur is p50 296 / p95 **561** ms on the phone and
+18.0 / 18.4 on the emulator: a flatline where the phone has a cliff, and p95 is
+what drops frames.
+
+**The rule that survives is one-directional.** Emulator timing is a *lower
+bound* on phone cost with an unknown 1.3–16.5x multiplier. Slow on the emulator
+is a genuine red flag worth acting on. Fast on the emulator proves nothing, and
+can never clear a budget. Re-run `HostRatioBenchmarkTest` on both if the
+hardware or the OpenCV version ever changes.
 
 Camera and TTS are the other line. The emulated camera produces synthetic
 frames, so guidance, framing and capture behaviour mean nothing there. Every bug
