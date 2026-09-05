@@ -85,6 +85,20 @@ class TtsManager(private val context: Context) : com.pagereader.android.reading.
                     val id = utteranceId ?: return
                     mainHandler.post { onUtteranceDone?.invoke(id) }
                 }
+                /**
+                 * A flushed or stopped utterance reports HERE, not via onDone.
+                 * Without this the player is left believing it is still
+                 * playing and waits for a callback that never arrives --
+                 * reading stops forever with no explanation, which for this
+                 * user is indistinguishable from a crash. Reachable from any
+                 * QUEUE_FLUSH: a guidance cue, an explore-mode region label,
+                 * or the page summary itself.
+                 */
+                override fun onStop(utteranceId: String?, interrupted: Boolean) {
+                    val id = utteranceId ?: return
+                    mainHandler.post { onUtteranceDone?.invoke(id) }
+                }
+
                 @Deprecated("required by the platform base class")
                 override fun onError(utteranceId: String?) {
                     // Treat an error as a finished utterance: the alternative is

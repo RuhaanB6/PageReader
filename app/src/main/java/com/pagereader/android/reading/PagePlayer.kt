@@ -54,6 +54,21 @@ class PagePlayer(
     var isFinished: Boolean = false
         private set
 
+    /**
+     * The utterance the player is waiting on, plus a counter to keep ids
+     * unique.
+     *
+     * Ids used to be derived from the position alone, which is not enough:
+     * re-speaking the same sentence -- resume after pause, repeat, or jumping
+     * onto the block already playing -- reuses the id, so a `done` left over
+     * from the previous attempt matches the new one and advances the position
+     * a sentence early. Auto-advance queues rather than flushes, so nothing
+     * sounds wrong; the damage is silent, surfacing as a saved resume point
+     * that skips a sentence on the next launch.
+     */
+    private var utteranceSeq = 0
+    private var outstanding: String? = null
+
     init {
         speaker.setOnDone { id -> onUtteranceDone(id) }
     }
@@ -92,17 +107,24 @@ class PagePlayer(
     /** A short spoken name for where the listener is. */
     fun currentTitle(): String = currentBlock?.let { BlockLabels.title(it) } ?: ""
 
-    fun play() {
+    /**
+     * @param flush true cuts off whatever is speaking. Pass false to start
+     *   reading *behind* something already queued -- the page summary, which
+     *   would otherwise be cancelled by its own first sentence milliseconds
+     *   after it began.
+     */
+    fun play(flush: Boolean = true) {
         if (playables.isEmpty() || isPlaying) return
         isPlaying = true
         isFinished = false
-        speakCurrent(flush = true)
+        speakCurrent(flush = flush)
         onStateChanged(this)
     }
 
     fun pause() {
         if (!isPlaying) return
         isPlaying = false
+        outstanding = null
         speaker.stop()
         onStateChanged(this)
     }
@@ -112,6 +134,7 @@ class PagePlayer(
     /** Stops and rewinds nothing -- position is kept so play() resumes here. */
     fun stop() {
         isPlaying = false
+        outstanding = null
         speaker.stop()
         onStateChanged(this)
     }
@@ -169,6 +192,7 @@ class PagePlayer(
         isFinished = false
         // Flush unconditionally: a jump while paused must still drop anything
         // the engine has already buffered, or it speaks after the user stopped.
+        outstanding = null
         speaker.stop()
         if (isPlaying) speakCurrent(flush = true)
         onStateChanged(this)
@@ -184,7 +208,10 @@ class PagePlayer(
      */
     private fun onUtteranceDone(id: String) {
         if (!isPlaying) return
-        if (id != utteranceId(position)) return
+        // Compare against the outstanding id, not one derived from the
+        // position: the same position can legitimately be spoken twice.
+        if (id != outstanding) return
+        outstanding = null
 
         val block = playables.getOrNull(position.blockIndex) ?: return
         val next = if (position.sentenceIndex + 1 < block.sentences.size) {
@@ -209,7 +236,9 @@ class PagePlayer(
     private fun speakCurrent(flush: Boolean) {
         val block = playables.getOrNull(position.blockIndex) ?: return
         val text = block.sentences.getOrNull(position.sentenceIndex) ?: return
-        speaker.speak(text, utteranceId(position), flush)
+        val id = "u${utteranceSeq++}-b${position.blockIndex}-s${position.sentenceIndex}"
+        outstanding = id
+        speaker.speak(text, id, flush)
     }
 
     private fun clamp(p: Position): Position {
@@ -219,5 +248,4 @@ class PagePlayer(
         return Position(b, s)
     }
 
-    private fun utteranceId(p: Position) = "b${p.blockIndex}-s${p.sentenceIndex}"
 }

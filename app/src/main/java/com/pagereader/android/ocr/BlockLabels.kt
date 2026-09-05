@@ -59,17 +59,40 @@ object BlockLabels {
         return blocks.map { b ->
             when {
                 b.text.isBlank() -> b
-                isMarginal(b, pageHeight) -> b.copy(kind = BlockKind.HEADER_FOOTER)
+                isMarginal(b, pageHeight, pageMedian) -> b.copy(kind = BlockKind.HEADER_FOOTER)
                 shouldPromote(b, pageMedian) -> b.copy(kind = BlockKind.HEADING)
                 else -> b
             }
         }
     }
 
-    /** A short block sitting entirely within the top or bottom margin band. */
-    private fun isMarginal(b: TextBlock, pageHeight: Int): Boolean {
+    /**
+     * A short block sitting entirely within the top or bottom margin band.
+     *
+     * Applies to blocks Tesseract already classified as well as plain body,
+     * deliberately: hOCR frequently marks a running head as `ocr_header`, and
+     * on the academic fixture that is exactly what "324 C. A. PEREZ ET AL."
+     * is. Demoting it is correct.
+     *
+     * The exception is size. A genuine chapter title can sit high on the page
+     * and be short, and announcing it as a page marker would cost the listener
+     * the one cue that says where they are. Running heads are set at body size
+     * or smaller; titles are not. Measured on the academic fixture the running
+     * head is ~1.15x the page median, comfortably under the heading ratio, so
+     * this exemption does not reintroduce it.
+     */
+    private fun isMarginal(b: TextBlock, pageHeight: Int, pageMedianWordHeight: Float): Boolean {
         if (pageHeight <= 0) return false
         if (wordCount(b.text) > MAX_MARGIN_WORDS) return false
+        // Large text is usually a title rather than a running head -- but not
+        // when it is a page number, which is short, numeric, and sometimes set
+        // large by design. Words earn the exemption; digits do not.
+        if (pageMedianWordHeight > 0f &&
+            b.medianWordHeight >= pageMedianWordHeight * HEADING_SIZE_RATIO &&
+            !isNumberLike(b.text)
+        ) {
+            return false
+        }
         val top = pageHeight * MARGIN_FRACTION
         val bottom = pageHeight * (1.0 - MARGIN_FRACTION)
         val entirelyAtTop = b.bbox.y + b.bbox.height <= top
@@ -84,6 +107,18 @@ object BlockLabels {
         if (b.lineCount > MAX_HEADING_LINES) return false
         return b.medianWordHeight >= pageMedianWordHeight * HEADING_SIZE_RATIO
     }
+
+    /**
+     * True when the text is a page marker rather than words -- digits, roman
+     * numerals, and the punctuation that decorates them ("- 87 -", "xiv.").
+     */
+    private fun isNumberLike(text: String): Boolean {
+        val stripped = text.filter { !it.isWhitespace() }
+        if (stripped.isEmpty()) return true
+        return stripped.all { it.isDigit() || it in ROMAN_AND_PUNCTUATION }
+    }
+
+    private const val ROMAN_AND_PUNCTUATION = "ivxlcdmIVXLCDM.,-–—()[]|/"
 
     private fun medianWordHeight(blocks: List<TextBlock>): Float {
         val heights = blocks.filter { it.text.isNotBlank() && it.medianWordHeight > 0f }

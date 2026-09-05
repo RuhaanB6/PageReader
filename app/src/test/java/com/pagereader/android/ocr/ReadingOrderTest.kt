@@ -181,4 +181,40 @@ class ReadingOrderTest {
         val full = ReadingOrder.disagreesWithSourceOrder(blocks, reversed)
         assertTrue("a full reversal should be near total, got $full", full > 0.95)
     }
+
+    /**
+     * A block wider than a column but narrower than a divider must not weld the
+     * columns either side of it into one.
+     *
+     * This is the exact failure the stage exists to prevent, reachable on any
+     * real page with a photo, table or pull-quote spanning part of two columns.
+     * Grouping used to ask whether a block matched *any* member of a column,
+     * which made column membership transitive: the middle block overlaps the
+     * left column by 0.55 and the right by 0.55, so it chained them together
+     * even though left and right do not overlap at all.
+     */
+    @Test
+    fun aMidWidthBlockDoesNotWeldTwoColumnsTogether() {
+        val l1 = block(50, 100, 400, 80)
+        val r1 = block(550, 100, 400, 80)
+        val mid = block(230, 200, 540, 80)
+        val l2 = block(50, 300, 400, 80)
+        val r2 = block(550, 300, 400, 80)
+
+        val sorted = ReadingOrder.sort(listOf(l1, r1, mid, l2, r2), pageW)
+        val ids = orderOf(sorted)
+
+        // The invariant is no interleaving: every left-column block is read
+        // before every right-column one. The mid-width block legitimately sits
+        // inside whichever column it overlaps -- what must not happen is the
+        // two columns being welded so the listener hears l1, r1, l2, r2.
+        val lastLeft = maxOf(ids.indexOf(l1.id), ids.indexOf(l2.id))
+        val firstRight = minOf(ids.indexOf(r1.id), ids.indexOf(r2.id))
+        assertTrue(
+            "columns are interleaved: $ids",
+            lastLeft < firstRight,
+        )
+        assertEquals("the right column should be read as one run",
+            1, ids.indexOf(r2.id) - ids.indexOf(r1.id))
+    }
 }

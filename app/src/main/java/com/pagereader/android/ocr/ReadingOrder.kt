@@ -93,12 +93,18 @@ object ReadingOrder {
     private fun orderWithinBand(band: List<TextBlock>): List<TextBlock> {
         if (band.size <= 1) return band
 
-        // Transitive grouping: A and C belong together if both overlap B, even
-        // when they do not overlap each other. A ragged column of varying
-        // indents is otherwise split into several.
+        // A block joins a column only if it overlaps EVERY member, not merely
+        // one of them. Matching any member makes column membership transitive,
+        // and transitivity is fatal here: a block wider than a column but
+        // narrower than a divider -- a photo, a table, a pull-quote -- overlaps
+        // the left column by 0.55 and the right by 0.55 and welds them into a
+        // single column, which is precisely the interleaving this whole stage
+        // exists to prevent. Requiring all members costs a ragged column being
+        // split occasionally, which merely inserts a pause; the alternative
+        // reads two columns as one and is unrecoverable by the listener.
         val columns = mutableListOf<MutableList<TextBlock>>()
         for (b in band.sortedBy { it.bbox.x }) {
-            val hit = columns.firstOrNull { col -> col.any { sameColumn(it, b) } }
+            val hit = columns.firstOrNull { col -> col.all { sameColumn(it, b) } }
             if (hit != null) hit += b else columns += mutableListOf(b)
         }
 

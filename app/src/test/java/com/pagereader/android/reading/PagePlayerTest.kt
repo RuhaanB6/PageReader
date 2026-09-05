@@ -75,7 +75,8 @@ class PagePlayerTest {
 
         assertTrue(player.isPlaying)
         assertEquals("One two three.", speaker.lastText)
-        assertEquals("b0-s0", speaker.spoken.last().id)
+        assertTrue("id should name the position: ${speaker.spoken.last().id}",
+            speaker.spoken.last().id.endsWith("b0-s0"))
         assertTrue("starting playback should flush", speaker.spoken.last().flush)
     }
 
@@ -128,12 +129,13 @@ class PagePlayerTest {
         val player = PagePlayer(speaker)
         player.load(page(block("A one. A two."), block("B one."), block("C one.")))
         player.play()
+        val staleId = speaker.spoken.last().id
 
         player.nextBlock()
         assertEquals(PagePlayer.Position(1, 0), player.position)
 
         // The engine reports the first block's first sentence finishing, late.
-        speaker.finish("b0-s0")
+        speaker.finish(staleId)
 
         assertEquals("position must not move on a stale done",
             PagePlayer.Position(1, 0), player.position)
@@ -299,5 +301,67 @@ class PagePlayerTest {
         player.jumpToBlockId(c.id)
         assertEquals("Gamma.", speaker.lastText)
         assertEquals(c.id, player.currentBlock?.id)
+    }
+
+    /**
+     * Re-speaking the same sentence must not accept the previous attempt's
+     * `done`.
+     *
+     * Ids used to be derived from the position alone, so pause-then-resume
+     * spoke sentence (0,0) twice under the same id. A `done` left over from
+     * the first attempt then matched the second and advanced a sentence early.
+     * Auto-advance queues rather than flushes, so nothing sounds wrong -- the
+     * damage shows up as a saved resume point that skips a sentence.
+     */
+    @Test
+    fun aDoneFromAnEarlierAttemptAtTheSameSentenceIsIgnored() {
+        val speaker = FakeSpeaker()
+        val player = PagePlayer(speaker)
+        player.load(page(block("One. Two. Three.")))
+
+        player.play()
+        val firstAttempt = speaker.spoken.last().id
+        player.pause()
+        player.play()
+
+        assertEquals("resume should re-speak the same sentence",
+            PagePlayer.Position(0, 0), player.position)
+
+        // The engine now reports the FIRST attempt finishing.
+        speaker.finish(firstAttempt)
+
+        assertEquals("a done from the abandoned attempt must not advance",
+            PagePlayer.Position(0, 0), player.position)
+    }
+
+    /**
+     * The page summary is spoken before reading starts, so the first sentence
+     * has to queue behind it rather than flush it away.
+     */
+    @Test
+    fun playCanQueueBehindSomethingAlreadySpeaking() {
+        val speaker = FakeSpeaker()
+        val player = PagePlayer(speaker)
+        player.load(page(block("First sentence.")))
+        player.play(flush = false)
+        assertFalse("play(flush = false) must not cut off the summary",
+            speaker.spoken.last().flush)
+    }
+
+    /**
+     * A stop reported by the engine (which arrives as onStop, not onDone) must
+     * not be mistaken for progress.
+     */
+    @Test
+    fun stoppingClearsTheOutstandingUtterance() {
+        val speaker = FakeSpeaker()
+        val player = PagePlayer(speaker)
+        player.load(page(block("One. Two.")))
+        player.play()
+        val id = speaker.spoken.last().id
+        player.stop()
+        speaker.finish(id)
+        assertEquals(PagePlayer.Position(0, 0), player.position)
+        assertFalse(player.isPlaying)
     }
 }
