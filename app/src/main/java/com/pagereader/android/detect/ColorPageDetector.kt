@@ -26,11 +26,26 @@ import org.opencv.imgproc.Imgproc
  * Rather than thresholding L and chroma independently and intersecting, both are
  * folded into one "paperness" channel:
  *
- *     paperness = L - CHROMA_WEIGHT * chroma
+ *     paperness = 128 * L / illumination(L) - CHROMA_WEIGHT * chroma
  *
  * A single Otsu threshold on that adapts to the scene automatically -- no fixed
  * brightness floor of the kind (`MIN_INTERIOR_BRIGHTNESS = 120`) that made v1
  * fail under dim light.
+ *
+ * The division is illumination normalisation, and it is load-bearing. Using raw
+ * L, the phone's own shadow across a page put the three populations in this
+ * order by lightness (measured on device 2026-09-05):
+ *
+ *     shadowed page L~95  <  carpet L~146  <  lit page L~214
+ *
+ * The background sits *between* the two halves of the page, so no global split
+ * point can separate them at any threshold -- Otsu at 119 kept the carpet inside
+ * the box and discarded the shadowed third of the sheet. Dividing L by a heavily
+ * blurred copy of itself removes the illumination gradient and collapses the
+ * page back into one population. Weighting chroma harder was tried as an
+ * alternative and does not work: the shadow costs ~119 units of L while the
+ * page-vs-carpet chroma gap is ~5, so CHROMA_WEIGHT would have to reach ~12 to
+ * invert the ordering, by which point everything clamps to zero.
  */
 class ColorPageDetector(
     private val processWidth: Int = PROCESS_WIDTH,
@@ -120,6 +135,8 @@ class ColorPageDetector(
         val aSigned = Mat()
         val bSigned = Mat()
         val chroma = Mat()
+        val illumination = Mat()
+        val normalised = Mat()
         val weighted = Mat()
         try {
             channels[0].convertTo(lightness, CvType.CV_32F)
@@ -128,9 +145,15 @@ class ColorPageDetector(
             channels[1].convertTo(aSigned, CvType.CV_32F, 1.0, -NEUTRAL)
             channels[2].convertTo(bSigned, CvType.CV_32F, 1.0, -NEUTRAL)
 
+            estimateIllumination(lightness, illumination)
+            // +1 so a near-black region divides by 1 rather than by 0 and
+            // amplifies its own sensor noise into a bright patch of "paper".
+            Core.add(illumination, Scalar(1.0), illumination)
+            Core.divide(lightness, illumination, normalised, NORMALISED_MID)
+
             Core.magnitude(aSigned, bSigned, chroma)
             Core.multiply(chroma, Scalar(CHROMA_WEIGHT), weighted)
-            Core.subtract(lightness, weighted, weighted)
+            Core.subtract(normalised, weighted, weighted)
 
             // Saturating cast: strongly coloured pixels clamp at 0 rather than
             // wrapping around into "very paper-like".
@@ -141,7 +164,38 @@ class ColorPageDetector(
             aSigned.release()
             bSigned.release()
             chroma.release()
+            illumination.release()
+            normalised.release()
             weighted.release()
+        }
+    }
+
+    /**
+     * Writes a smooth estimate of the light falling on the scene into [out].
+     *
+     * A Gaussian this wide carries no detail worth resolving at full
+     * resolution, so it is computed on a 1/8 scale copy and stretched back.
+     * That is not an approximation traded for speed -- it scored identically to
+     * the full-resolution blur to three decimal places on all three shadowed
+     * fixtures -- but the full-resolution version costs **249 ms per frame**
+     * against this detector's 17-18 ms budget, and this one costs **2.1 ms**.
+     * Measured on the JSC-AL50, 2026-09-05.
+     */
+    private fun estimateIllumination(lightness: Mat, out: Mat) {
+        val tiny = Mat()
+        try {
+            Imgproc.resize(
+                lightness, tiny,
+                Size(
+                    (lightness.width() / ILLUM_DOWNSCALE).toDouble(),
+                    (lightness.height() / ILLUM_DOWNSCALE).toDouble(),
+                ),
+                0.0, 0.0, Imgproc.INTER_AREA,
+            )
+            Imgproc.GaussianBlur(tiny, tiny, Size(0.0, 0.0), ILLUM_SIGMA / ILLUM_DOWNSCALE)
+            Imgproc.resize(tiny, out, lightness.size(), 0.0, 0.0, Imgproc.INTER_LINEAR)
+        } finally {
+            tiny.release()
         }
     }
 
@@ -192,8 +246,40 @@ class ColorPageDetector(
          * colour it carries -- enough to reject pale wood and beige fabric while
          * still admitting slightly warm-lit or off-white paper. Tune on device
          * against real light-on-light frames before changing.
+         *
+         * Raising it was swept against the shadowed fixtures (2, 4, 6, 8, 12)
+         * and is not the knob: with illumination normalisation in place, 2 and
+         * 4 are indistinguishable at 0.935 IoU and everything from 6 up is
+         * worse, reaching total failure at 12 where coloured pixels clamp.
          */
         private const val CHROMA_WEIGHT = 2.0
+
+        /**
+         * Width of the illumination estimate, in pixels of the 640x480
+         * processing frame.
+         *
+         * It has to be wide enough not to track the page itself -- a blur
+         * narrower than the sheet normalises the page-against-background
+         * contrast away along with the shadow. 51 is roughly an eighth of the
+         * frame width and comfortably below a page filling it. Wider is not
+         * better: sigma 121 scored 0.922 against 0.935, because it starts
+         * averaging the page and the background together again.
+         */
+        private const val ILLUM_SIGMA = 51.0
+
+        /**
+         * Scale factor for computing the illumination estimate. See
+         * [estimateIllumination] -- 8 turns a 249 ms blur into a 2.1 ms one
+         * with no measurable change in the fitted quad.
+         */
+        private const val ILLUM_DOWNSCALE = 8
+
+        /**
+         * Lightness that a pixel matching its own local illumination maps to.
+         * Mid-range, so the chroma penalty below has room to push a coloured
+         * pixel down without clamping at zero.
+         */
+        private const val NORMALISED_MID = 128.0
 
         /**
          * Paperness gap treated as full confidence.
