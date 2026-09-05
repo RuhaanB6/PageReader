@@ -60,6 +60,7 @@ fun ExploreScreen(
     talkBackEnabled: Boolean,
     onRegionEntered: (TextBlock) -> Unit,
     onReadRegion: (TextBlock) -> Unit,
+    onExit: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     var viewSize by remember { mutableStateOf(Size.Zero) }
@@ -80,26 +81,50 @@ fun ExploreScreen(
                         // *crossing* into a region, not on touching down in one.
                         awaitEachGesture {
                             val down = awaitFirstDown(requireUnconsumed = false)
-                            var lastId = hitTest(blocks, down.position, page, viewSize)
-                                ?.also(onRegionEntered)?.id
+                            // Follow THIS pointer by id. Taking the first
+                            // change in the event instead picks up whichever
+                            // pointer the system lists first, so a palm resting
+                            // on the phone -- normal for someone exploring by
+                            // touch -- can end the gesture while the real
+                            // finger is still down, and exploring goes silent
+                            // until they lift and touch again.
+                            val pointerId = down.id
                             var last = hitTest(blocks, down.position, page, viewSize)
+                            var lastId = last?.id
+                            last?.let(onRegionEntered)
+
+                            val startY = down.position.y
+                            var endY = startY
 
                             while (true) {
                                 val event = awaitPointerEvent()
-                                val change = event.changes.firstOrNull() ?: break
+                                val change = event.changes.firstOrNull { it.id == pointerId }
+                                    ?: break
                                 if (!change.pressed) break
+                                endY = change.position.y
                                 val here = hitTest(blocks, change.position, page, viewSize)
                                 if (here?.id != lastId) {
                                     lastId = here?.id
                                     last = here
-                                    // Label only. Reading whole paragraphs while
-                                    // the finger moves would make the page
-                                    // impossible to survey.
+                                    // Label only. Reading whole paragraphs
+                                    // while the finger moves would make the
+                                    // page impossible to survey.
                                     here?.let(onRegionEntered)
                                 }
                             }
-                            // Lifting reads the region in full.
-                            last?.let(onReadRegion)
+
+                            // Leaving is judged once, on the whole gesture,
+                            // never per-event. A per-event threshold fires on
+                            // an ordinary fast sweep upward -- the exact motion
+                            // this screen exists to support -- and drops the
+                            // user back into reading mid-survey with no idea
+                            // why. A long deliberate upward drag that touched
+                            // no region is unambiguous; anything else reads.
+                            if (endY - startY < -EXIT_DRAG_PX && last == null) {
+                                onExit()
+                            } else {
+                                last?.let(onReadRegion)
+                            }
                         }
                     }
                 }
@@ -215,3 +240,12 @@ private fun colourFor(kind: BlockKind): Color = when (kind) {
 
 /** Minimum outline weight. Below 3 dp the regions are hard to see at all. */
 private const val OUTLINE_DP = 3
+
+/**
+ * Upward drag over empty space that leaves explore mode.
+ *
+ * Large, and judged on the whole gesture rather than per event, because a false
+ * positive drops the user out of the screen they are surveying for no visible
+ * reason. Missing it merely needs repeating.
+ */
+private const val EXIT_DRAG_PX = 200f

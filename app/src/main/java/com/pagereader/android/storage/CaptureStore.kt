@@ -150,6 +150,7 @@ class CaptureStore(context: Context) {
         put("pageHeight", page.pageHeight)
         put("meanConfidence", page.meanConfidence.toDouble())
         put("elapsedMs", page.elapsedMs)
+        put("quarterTurnsClockwise", page.quarterTurnsClockwise)
         put("blocks", JSONArray().apply {
             page.blocks.forEach { b ->
                 put(JSONObject().apply {
@@ -192,6 +193,7 @@ class CaptureStore(context: Context) {
             blocks = blocks,
             meanConfidence = o.optDouble("meanConfidence", 0.0).toFloat(),
             elapsedMs = o.optLong("elapsedMs"),
+            quarterTurnsClockwise = o.optInt("quarterTurnsClockwise", 0),
         )
     }
 

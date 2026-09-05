@@ -7,6 +7,7 @@ import com.pagereader.android.detect.ObservationSource
 import com.pagereader.android.detect.PageDetector
 import com.pagereader.android.detect.PageObservation
 import com.pagereader.android.detect.Pt
+import com.pagereader.android.detect.Side
 import com.pagereader.android.detect.YoloDnnEngine
 import com.pagereader.android.detect.YoloPageDetector
 import org.junit.Assert.assertEquals
@@ -198,6 +199,56 @@ class PageDewarperTest {
             val where = darkestRow.toDouble() / p.height()
             assertTrue("stripe at ${"%.2f".format(where)} of the page, expected near 0.10",
                 where < 0.20)
+        } finally {
+            r.release(); still.release()
+        }
+    }
+
+    /**
+     * A page running off the still's own border must be reported.
+     *
+     * It passes every degeneracy check -- four distinct corners, long edges,
+     * ample area -- and warps into a clean-looking rectangle, so nothing
+     * downstream can tell that a strip of the page is simply missing. Read
+     * aloud to someone who cannot see the paper, that is the worst outcome in
+     * the pipeline: text presented as complete when it is not.
+     */
+    @Test
+    fun clippingOnTheStillIsCarriedForward() {
+        val still = canvas(1200, 900)
+        val clippedDetector = object : PageDetector {
+            override fun detect(bgr: Mat, roi: Rect?) = PageObservation(
+                quad = listOf(
+                    Pt(0.0, 40.0), Pt(bgr.width() - 1.0, 40.0),
+                    Pt(bgr.width() - 1.0, bgr.height() - 40.0), Pt(0.0, bgr.height() - 40.0),
+                ),
+                confidence = 1f,
+                coverage = 0.9f,
+                clipped = setOf(Side.LEFT, Side.RIGHT),
+                tiltDegrees = 0f,
+                frameWidth = bgr.width(),
+                frameHeight = bgr.height(),
+                source = ObservationSource.NEURAL,
+            )
+        }
+        val r = PageDewarper(clippedDetector).dewarp(still)
+        try {
+            assertTrue("a usable quad should still dewarp", r.applied)
+            assertEquals("the still's clipping must reach the caller",
+                setOf(Side.LEFT, Side.RIGHT), r.clipped)
+        } finally {
+            r.release(); still.release()
+        }
+    }
+
+    /** A page well inside the frame reports nothing clipped. */
+    @Test
+    fun anUnclippedPageReportsNoClipping() {
+        val still = canvas(1200, 900)
+        val q = listOf(Pt(200.0, 150.0), Pt(1000.0, 150.0), Pt(1000.0, 750.0), Pt(200.0, 750.0))
+        val r = PageDewarper(FakeDetector(q, 1200, 900)).dewarp(still)
+        try {
+            assertTrue(r.clipped.isEmpty())
         } finally {
             r.release(); still.release()
         }

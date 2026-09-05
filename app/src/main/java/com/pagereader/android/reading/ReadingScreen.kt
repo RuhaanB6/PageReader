@@ -49,6 +49,7 @@ fun ReadingScreen(
     currentBlockId: Int?,
     onTogglePlay: () -> Unit,
     onRepeatBlock: () -> Unit,
+    onNextPage: () -> Unit,
     onReadFrom: (TextBlock) -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -58,10 +59,20 @@ fun ReadingScreen(
         modifier = modifier
             .fillMaxSize()
             .pointerInput(Unit) {
-                // Tap and long-press anywhere. Aim is the thing this user does
-                // not have, so the target is the whole screen.
+                // Tap, double-tap and long-press anywhere. Aim is the thing
+                // this user does not have, so the target is the whole screen.
+                //
+                // All three live in ONE recognizer deliberately. A separate
+                // double-tap detector on an ancestor does not compose: both
+                // see every touch, so one physical double-tap toggles play
+                // twice here AND fires the ancestor, and the user gets an
+                // unrequested capture over the top of their page. Declaring
+                // onDoubleTap here also makes Compose wait for the second tap
+                // before resolving a single one, which is the disambiguation
+                // two independent detectors cannot do.
                 detectTapGestures(
                     onTap = { onTogglePlay() },
+                    onDoubleTap = { onNextPage() },
                     onLongPress = { onRepeatBlock() },
                 )
             }

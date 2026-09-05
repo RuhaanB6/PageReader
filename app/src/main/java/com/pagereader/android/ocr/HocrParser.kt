@@ -66,6 +66,16 @@ object HocrParser {
         fun closeBlock() {
             if (!inBlock) return
             val bbox = blockBbox
+            if (bbox == null && words.isNotBlank()) {
+                // A carea whose title attribute is malformed has nowhere to be
+                // placed, so its text cannot be used -- but losing a paragraph
+                // in silence is exactly what this pipeline must never do, so
+                // it at least leaves a trace.
+                android.util.Log.w(
+                    "HocrParser",
+                    "discarding ${words.length} chars: block had no usable bbox",
+                )
+            }
             if (bbox != null) {
                 val text = words.toString().trim().replace(WHITESPACE, " ")
                 blocks += TextBlock(

@@ -71,12 +71,22 @@ class TesseractOcr private constructor(
         }
     }
 
+    /**
+     * Wraps a parse result, recording the rotation its geometry is expressed in.
+     *
+     * The caller must rotate the page image to match before storing or showing
+     * it beside these boxes. It is deliberately NOT the boxes that get rotated
+     * back: reading order is computed from geometry, so putting the boxes into
+     * the sideways frame would make band-then-column resolve columns along the
+     * wrong axis and garble the reading sequence -- the upright frame is the
+     * correct one to read in, which is the entire point of the retry.
+     */
     private fun HocrParser.ParsedPage.toPage(
         startedMs: Long,
         rotatedQuarterTurn: Boolean = false,
     ): OcrPage {
         if (rotatedQuarterTurn) {
-            Log.i(TAG, "page was read rotated; block boxes are in the rotated frame")
+            Log.i(TAG, "page was read rotated a quarter turn clockwise")
         }
         return OcrPage(
             pageWidth = pageWidth,
@@ -84,6 +94,7 @@ class TesseractOcr private constructor(
             blocks = blocks,
             meanConfidence = meanConfidence,
             elapsedMs = System.currentTimeMillis() - startedMs,
+            quarterTurnsClockwise = if (rotatedQuarterTurn) 1 else 0,
         )
     }
 

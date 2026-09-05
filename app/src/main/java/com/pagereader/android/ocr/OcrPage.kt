@@ -53,6 +53,13 @@ data class TextBlock(
 /**
  * A recognised page.
  *
+ * @property quarterTurnsClockwise how far the page image had to be rotated
+ *   before OCR succeeded, 0 or 1. Space **G** is defined as the orientation
+ *   the text was actually read in, so every bbox here is in that frame -- and
+ *   any image shown or stored alongside these boxes must be rotated to match.
+ *   Rotating the boxes back instead would be wrong: reading order is computed
+ *   from geometry, so boxes in the sideways frame make band-then-column
+ *   resolve columns along the wrong axis.
  * @property meanConfidence the page's self-diagnostic, and load-bearing.
  *   Measured over ten real pages, everything below 0.60 was genuinely broken
  *   (a rotated page at 0.36, a 680 px thumbnail at 0.54, English OCR over
@@ -66,6 +73,7 @@ data class OcrPage(
     val blocks: List<TextBlock>,
     val meanConfidence: Float,
     val elapsedMs: Long,
+    val quarterTurnsClockwise: Int = 0,
 ) {
     /** Blocks that carry words, in current order. */
     val textBlocks: List<TextBlock>

@@ -4,6 +4,7 @@ import android.util.Log
 import com.pagereader.android.detect.MaskToQuad
 import com.pagereader.android.detect.PageDetector
 import com.pagereader.android.detect.Pt
+import com.pagereader.android.detect.Side
 import org.opencv.core.Mat
 import org.opencv.core.MatOfPoint2f
 import org.opencv.core.Point
@@ -40,12 +41,15 @@ class PageDewarper(private val detector: PageDetector) {
             return DewarpResult(still.clone(), applied = false, homography = null)
         }
 
-        val quad = detectOnStill(still)
+        val detected = detectOnStill(still)
             ?: return DewarpResult(still.clone(), applied = false, homography = null).also {
                 Log.w(TAG, "no quad on the still; reading the whole photo")
             }
 
-        return warp(still, quad)
+        if (detected.clipped.isNotEmpty()) {
+            Log.w(TAG, "page runs off the still at ${detected.clipped}")
+        }
+        return warp(still, detected.quad, detected.clipped)
     }
 
     /**
@@ -56,7 +60,9 @@ class PageDewarper(private val detector: PageDetector) {
      * for nothing. The quad is scaled back to full resolution, so the warp
      * samples every pixel the sensor captured.
      */
-    private fun detectOnStill(still: Mat): List<Point>? {
+    private data class Detected(val quad: List<Point>, val clipped: Set<Side>)
+
+    private fun detectOnStill(still: Mat): Detected? {
         val scale = WORKING_WIDTH.toDouble() / still.width()
         // Never upscale to detect: a still narrower than the working width is
         // already easier, and enlarging it would only invent detail.
@@ -72,7 +78,8 @@ class PageDewarper(private val detector: PageDetector) {
                 still.copyTo(work)
             }
 
-            val observed = detector.detect(work).quad ?: return null
+            val observation = detector.detect(work)
+            val observed = observation.quad ?: return null
             val back = if (scale < 1.0) 1.0 / scale else 1.0
             val scaled = observed.map { Point(it.x * back, it.y * back) }
 
@@ -84,7 +91,14 @@ class PageDewarper(private val detector: PageDetector) {
                 Log.w(TAG, "quad is degenerate; reading the whole photo")
                 null
             } else {
-                ordered
+                // Carry the clipping forward. A page cut by the still's own
+                // border passes every degeneracy check -- four distinct
+                // corners, long edges, ample area -- and warps into a clean
+                // rectangle. Without this the missing strip is read aloud as
+                // if the page were complete, to someone who cannot see that it
+                // is not. This is the still's own clipping, measured here, not
+                // the framing observation from seconds earlier.
+                Detected(ordered, observation.clipped)
             }
         } finally {
             work.release()
@@ -119,7 +133,7 @@ class PageDewarper(private val detector: PageDetector) {
     private fun edgeLengths(q: List<Point>): List<Double> =
         q.indices.map { hypot(q[(it + 1) % q.size].x - q[it].x, q[(it + 1) % q.size].y - q[it].y) }
 
-    private fun warp(still: Mat, q: List<Point>): DewarpResult {
+    private fun warp(still: Mat, q: List<Point>, clipped: Set<Side>): DewarpResult {
         val (tl, tr, br, bl) = listOf(q[0], q[1], q[2], q[3])
 
         // Take the longer of each opposing pair: under perspective the near
@@ -163,14 +177,25 @@ class PageDewarper(private val detector: PageDetector) {
         dst.release()
 
         val out = Mat()
-        // INTER_CUBIC because the common case is an upscale to clear the OCR
-        // minimum, where bilinear visibly softens character edges.
-        Imgproc.warpPerspective(still, out, homography, Size(outW.toDouble(), outH.toDouble()),
-            Imgproc.INTER_CUBIC)
-
-        Log.i(TAG, "dewarped ${still.width()}x${still.height()} -> ${outW}x$outH (factor %.2f)"
-            .format(factor))
-        return DewarpResult(out, applied = true, homography = homography)
+        return try {
+            // INTER_CUBIC because the common case is an upscale to clear the
+            // OCR minimum, where bilinear visibly softens character edges.
+            Imgproc.warpPerspective(
+                still, out, homography, Size(outW.toDouble(), outH.toDouble()),
+                Imgproc.INTER_CUBIC,
+            )
+            Log.i(TAG, "dewarped ${still.width()}x${still.height()} -> ${outW}x$outH (factor %.2f)"
+                .format(factor))
+            DewarpResult(out, applied = true, homography = homography, clipped = clipped)
+        } catch (t: Throwable) {
+            // Both Mats are live native allocations at full resolution. The
+            // caller's catch builds a fresh fallback and never sees these, so
+            // without this they leak tens of megabytes per bad still.
+            Log.e(TAG, "warp failed; reading the whole photo", t)
+            out.release()
+            homography.release()
+            DewarpResult(still.clone(), applied = false, homography = null)
+        }
     }
 
     companion object {
@@ -211,11 +236,15 @@ class PageDewarper(private val detector: PageDetector) {
  *   was found. The caller must say so aloud -- the user cannot see it.
  * @property homography the 3x3 S -> G transform, or null when [applied] is
  *   false. Kept so text boxes found in G can be mapped back to the still.
+ * @property clipped which borders the page ran off in the STILL. Measured on
+ *   the captured photo rather than on a framing observation from seconds
+ *   earlier, so it describes the image actually about to be read.
  */
 data class DewarpResult(
     val page: Mat,
     val applied: Boolean,
     val homography: Mat?,
+    val clipped: Set<Side> = emptySet(),
 ) {
     fun release() {
         page.release()

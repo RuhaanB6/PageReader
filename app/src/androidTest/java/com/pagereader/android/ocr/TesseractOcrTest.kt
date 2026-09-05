@@ -3,6 +3,7 @@ package com.pagereader.android.ocr
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import org.junit.After
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
@@ -125,6 +126,49 @@ class TesseractOcrTest {
         } finally {
             upright.release()
             sideways.release()
+        }
+    }
+
+    /**
+     * A recovered page must SAY which frame its geometry is in.
+     *
+     * The retry reads a rotated copy, so every bbox and the page dimensions
+     * describe that rotated image. Nothing about the result looks wrong on its
+     * own -- it is internally consistent -- so without this flag the caller
+     * stores the unrotated photo beside rotated boxes and touch-explore points
+     * at the wrong places, silently. The existing recovery test asserts text
+     * and confidence only, which is exactly why this shipped green.
+     */
+    @Test
+    fun aRecoveredPageReportsTheRotationItsGeometryIsIn() {
+        val upright = renderedPage(sample)
+        val sideways = Mat()
+        try {
+            Core.rotate(upright, sideways, Core.ROTATE_90_COUNTERCLOCKWISE)
+            val r = ocr!!.recognise(sideways)
+            assertEquals("the retry won, so the frame is a quarter turn on",
+                1, r.quarterTurnsClockwise)
+            // Reported dimensions must match the frame the boxes are in.
+            assertTrue("page dims should describe the rotated frame",
+                r.pageHeight > r.pageWidth)
+            for (b in r.blocks) {
+                assertTrue("block ${b.id} escapes the reported frame: ${b.bbox}",
+                    b.bbox.x + b.bbox.width <= r.pageWidth &&
+                        b.bbox.y + b.bbox.height <= r.pageHeight)
+            }
+        } finally {
+            upright.release(); sideways.release()
+        }
+    }
+
+    /** An upright page needs no rotation and must not claim one. */
+    @Test
+    fun anUprightPageReportsNoRotation() {
+        val page = renderedPage(sample)
+        try {
+            assertEquals(0, ocr!!.recognise(page).quarterTurnsClockwise)
+        } finally {
+            page.release()
         }
     }
 

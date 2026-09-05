@@ -1,6 +1,5 @@
 package com.pagereader.android.reading
 
-import com.pagereader.android.detect.PageObservation
 import com.pagereader.android.detect.Side
 import com.pagereader.android.ocr.OcrPage
 
@@ -30,15 +29,18 @@ object CaptureQuality {
     )
 
     /**
-     * @param observation the framing at the moment of capture, or null if it
-     *   was not recorded. `clipped` is already computed by the detector.
+     * @param clipped which borders the page ran off **in the still that was
+     *   read**. Deliberately a plain set rather than a `PageObservation`: the
+     *   only observation lying around at this point is the live framing one,
+     *   which by now describes a scene seconds old and a phone that has moved,
+     *   and passing it made the clipping verdict essentially random. Taking
+     *   just the set forces the caller to supply the right one.
      * @param page the OCR result for the captured still.
      */
-    fun assess(observation: PageObservation?, page: OcrPage): Verdict {
+    fun assess(clipped: Set<Side>, page: OcrPage): Verdict {
         // Order matters: report the *cause* the user can act on. A clipped page
         // usually also reads badly, and "the left edge was cut off" is a far
         // more useful instruction than "the text came out blurry".
-        val clipped = observation?.clipped.orEmpty()
         if (clipped.isNotEmpty()) {
             return Verdict(false, "${describe(clipped)} Volume up to retake.")
         }

@@ -166,32 +166,47 @@ class MainActivity : ComponentActivity() {
                         // whole screen is the target because a blind user cannot
                         // aim at a button, and double- rather than single-tap so
                         // a hand steadying the phone does not fire it.
-                        .pointerInput(Unit) {
-                            detectTapGestures(onDoubleTap = { takeStill(auto = false) })
-                        }
-                        .pointerInput(Unit) {
-                            // Swipe up moves between reading and touch-explore.
-                            // A drag rather than a tap so it cannot be
-                            // triggered by a hand steadying the phone, and it
-                            // is skipped under TalkBack, which owns swipes.
-                            detectVerticalDragGestures { _, delta ->
-                                if (!isTalkBackEnabled() && delta < -SWIPE_THRESHOLD_PX) {
-                                    when (mode.value) {
-                                        Mode.READING -> {
+                        // Framing only. Left attached in every mode this
+                        // competed with ReadingScreen's own tap handling: both
+                        // saw each touch, so a double-tap toggled play twice
+                        // AND fired a capture over the page being read. In
+                        // reading mode the shutter lives inside ReadingScreen's
+                        // single recognizer instead.
+                        .then(
+                            if (mode.value == Mode.FRAMING) {
+                                Modifier.pointerInput(Unit) {
+                                    detectTapGestures(
+                                        onDoubleTap = { takeStill(auto = false) }
+                                    )
+                                }
+                            } else {
+                                Modifier
+                            }
+                        )
+                        // Entry into explore only. Leaving is owned by
+                        // ExploreScreen's own gesture loop: running this
+                        // detector there too meant two recognizers over one
+                        // drag stream, and an ordinary fast upward sweep --
+                        // the motion explore exists to support -- silently
+                        // kicked the user back to reading. Skipped under
+                        // TalkBack, which owns swipes.
+                        .then(
+                            if (mode.value == Mode.READING && !isTalkBackEnabled()) {
+                                Modifier.pointerInput(Unit) {
+                                    detectVerticalDragGestures { _, delta ->
+                                        if (delta < -SWIPE_THRESHOLD_PX) {
                                             mode.value = Mode.EXPLORING
                                             ttsManager.say(
-                                                "Explore mode. Drag a finger over the page."
+                                                "Explore mode. Drag a finger over the page. " +
+                                                    "Swipe up over an empty area to go back."
                                             )
                                         }
-                                        Mode.EXPLORING -> {
-                                            mode.value = Mode.READING
-                                            ttsManager.say("Reading mode.")
-                                        }
-                                        Mode.FRAMING -> Unit
                                     }
                                 }
+                            } else {
+                                Modifier
                             }
-                        }
+                        )
                 ) {
                     when (mode.value) {
                         Mode.FRAMING -> if (hasCameraPermission.value) {
@@ -213,6 +228,7 @@ class MainActivity : ComponentActivity() {
                                 currentBlockId = currentBlockId.value,
                                 onTogglePlay = { player.toggle() },
                                 onRepeatBlock = { player.repeatBlock() },
+                                onNextPage = { returnToCamera() },
                                 onReadFrom = { block ->
                                     player.jumpToBlockId(block.id)
                                     player.play()
@@ -234,6 +250,10 @@ class MainActivity : ComponentActivity() {
                                 onReadRegion = { block ->
                                     player.jumpToBlockId(block.id)
                                     player.play()
+                                },
+                                onExit = {
+                                    mode.value = Mode.READING
+                                    ttsManager.say("Reading mode.")
                                 },
                                 modifier = Modifier.fillMaxSize(),
                             )
@@ -300,13 +320,28 @@ class MainActivity : ComponentActivity() {
      */
     private fun handleFrame(observation: PageObservation, latencyMs: Long, preview: org.opencv.core.Mat) {
         try {
+            // Analysis is bound to the Activity lifecycle, not to the
+            // composition, so frames keep arriving after the user leaves the
+            // camera. Without this gate the guidance policy stays live while a
+            // page is being read: a framing cue speaks with QUEUE_FLUSH and
+            // cuts the reading dead, and the capture latch can fire a second,
+            // unrequested shutter mid-page. Both were reachable simply by
+            // lowering the phone after a capture.
+            if (mode.value != Mode.FRAMING) return
+
             latestObservation.value = observation
 
             val shaking = shakeDetector.isShaking
             val decision = policy.update(observation, shaking, System.currentTimeMillis())
 
             decision.utterance?.let { ttsManager.speak(it) }
-            if (decision.capture) takeStill(auto = true)
+            if (decision.capture) {
+                // Re-arm for the next page. Previously reset() ran only in
+                // retake(), so the latch stayed armed against a scene the user
+                // had already finished with.
+                policy.reset()
+                takeStill(auto = true)
+            }
 
             debugLine.value = buildString {
                 append(detectorLabel)
@@ -436,7 +471,13 @@ class MainActivity : ComponentActivity() {
      * every 1% would be worse than saying nothing.
      */
     private fun recogniseOffThread(page: DewarpResult) {
-        if (ocrUnavailable) return
+        if (ocrUnavailable) {
+            // Speak on every attempt. Returning silently after the first
+            // failure meant every later shutter said "Captured. Reading the
+            // page." and then nothing at all, permanently.
+            runOnUiThread { ttsManager.say("I cannot read text on this device.") }
+            return
+        }
         val engine = ocr ?: TesseractOcr.create(this) { percent ->
             // Called on this thread by Tesseract; hop to main to speak.
             val bucket = percent / 25
@@ -461,13 +502,41 @@ class MainActivity : ComponentActivity() {
             null
         }
 
+        // Persist here, on this thread, before hopping back. Encoding a
+        // multi-megapixel JPEG inside runOnUiThread stalls the main thread for
+        // hundreds of milliseconds right after every capture.
+        //
+        // The image is rotated to match the frame OCR actually read in. Space
+        // G is defined by that frame, so a page recovered by the rotation
+        // retry has boxes a quarter turn from the unrotated still -- storing
+        // the two together would put every box in the wrong place.
+        val savedId = if (result != null && result.meanConfidence >= OcrPage.USABLE_CONFIDENCE) {
+            val upright = org.opencv.core.Mat()
+            try {
+                if (result.quarterTurnsClockwise == 1) {
+                    org.opencv.core.Core.rotate(
+                        page.page, upright, org.opencv.core.Core.ROTATE_90_CLOCKWISE
+                    )
+                } else {
+                    page.page.copyTo(upright)
+                }
+                store.save(upright, result)?.id
+            } catch (t: Throwable) {
+                Log.w(TAG, "could not store the capture", t)
+                null
+            } finally {
+                upright.release()
+            }
+        } else {
+            null
+        }
+
         runOnUiThread {
             if (result == null) {
                 ttsManager.say("Something went wrong reading the page. Try again.")
                 return@runOnUiThread
             }
             lastPageText = result
-            currentCaptureId = lastPage?.page?.let { store.save(it, result)?.id }
             val words = result.textBlocks.sumOf { b -> b.text.split(' ').count { it.isNotBlank() } }
             Log.i(TAG, "ocr: ${result.blocks.size} blocks, $words words, " +
                 "conf=${result.meanConfidence}, ${result.elapsedMs} ms")
@@ -479,7 +548,10 @@ class MainActivity : ComponentActivity() {
             // Judge the capture before reading a word of it. Reading a
             // garbled page to someone who cannot check it against the paper is
             // worse than asking them to retake.
-            val verdict = CaptureQuality.assess(latestObservation.value, result)
+            // Clipping comes from the dewarp's own detection on the still.
+            // latestObservation is whatever the camera saw a moment ago -- by
+            // now the phone has moved, so it describes a different scene.
+            val verdict = CaptureQuality.assess(page.clipped, result)
             lastVerdictWasRetake = !verdict.usable
             if (!verdict.usable) {
                 verdict.message?.let { ttsManager.say(it) }
@@ -491,12 +563,17 @@ class MainActivity : ComponentActivity() {
             // page that takes minutes to hear.
             readingPage.value = result
             mode.value = Mode.READING
+            currentCaptureId = savedId
             player.load(result)
             ttsManager.say(
-                com.pagereader.android.ocr.BlockLabels.pageSummary(result),
+                com.pagereader.android.ocr.BlockLabels.pageSummary(result) +
+                    " Double tap for the next page.",
                 flush = true,
             )
-            player.play()
+            // Queue behind the summary. play() flushes by default, which
+            // cancelled the summary milliseconds after it started -- every
+            // word of the page description was inaudible.
+            player.play(flush = false)
         }
     }
 
@@ -551,7 +628,15 @@ class MainActivity : ComponentActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
+        // Order matters. shutdown() only refuses new work, so without the
+        // wait, recycle() frees Tesseract's native state underneath a
+        // recognition still running on the executor -- a native crash, and
+        // reachable by nothing more than swiping the app away mid-page.
+        ocr?.stop()
         captureExecutor.shutdown()
+        runCatching {
+            captureExecutor.awaitTermination(TEARDOWN_WAIT_MS, java.util.concurrent.TimeUnit.MILLISECONDS)
+        }
         ocr?.close()
         ocr = null
         lastPage?.release()
@@ -566,15 +651,26 @@ class MainActivity : ComponentActivity() {
     /** True while the last capture was judged unusable, so volume up retakes. */
     private var lastVerdictWasRetake = false
 
-    /** Back to the camera for another try. */
-    private fun retake() {
+    /** Back to the camera for another try, or for the next page. */
+    private fun retake() = returnToCamera()
+
+    /**
+     * Leaves reading and re-arms the camera.
+     *
+     * Until this existed there was no way back at all once a page had been
+     * read successfully: `mode` was only ever set to FRAMING by the retake
+     * path, which requires a *failed* verdict. A user who captured one page
+     * well was stuck on it until they restarted the app.
+     */
+    private fun returnToCamera() {
         lastVerdictWasRetake = false
         player.stop()
         readingPage.value = null
         currentCaptureId = null
+        currentBlockId.value = null
         mode.value = Mode.FRAMING
         policy.reset()
-        ttsManager.say("Ready. Hold the phone over the page.")
+        ttsManager.say("Ready for the next page. Hold the phone over it.")
     }
 
     /**
@@ -604,6 +700,12 @@ class MainActivity : ComponentActivity() {
          * disorienting than a missed swipe, which simply needs repeating.
          */
         private const val SWIPE_THRESHOLD_PX = 40f
+
+        /**
+         * How long teardown waits for an in-flight recognition. Long enough to
+         * cover a normal page, short enough not to hang the destroy.
+         */
+        private const val TEARDOWN_WAIT_MS = 2_000L
         private const val LOW_CONFIDENCE = 0.35f
         private const val MODEL_ASSET = "yolov8n_det_256.onnx"
     }

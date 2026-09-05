@@ -144,7 +144,9 @@ object BlockLabels {
         BlockKind.HEADER_FOOTER -> "Page marker: ${snippet(block.text, words)}"
         BlockKind.CAPTION -> "Caption: ${snippet(block.text, words)}"
         BlockKind.SIDEBAR -> "Sidebar: ${snippet(block.text, words)}"
-        BlockKind.BODY -> snippet(block.text, words)
+        // Never empty: an unlabelled node is announced by a screen reader as
+        // "Unlabeled", which is the silence-as-crash failure in miniature.
+        BlockKind.BODY -> snippet(block.text, words).ifBlank { "Unlabelled region" }
     }
 
     private fun snippet(text: String, words: Int): String {
