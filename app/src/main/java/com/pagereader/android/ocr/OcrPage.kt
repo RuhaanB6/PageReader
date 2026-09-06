@@ -81,10 +81,49 @@ data class OcrPage(
 
     companion object {
         /**
-         * Below this a page is treated as not properly read. See
-         * [OcrPage.meanConfidence] for the measurements behind the number.
+         * Below this a page is not read aloud.
+         *
+         * Was 0.60, which came from ten sample images that were scans and
+         * screenshots. On the first real phone capture -- a newspaper front
+         * page -- Tesseract returned 0.629 and the app confidently read out
+         * "DRERSDAY, SEPTEMBER 4 2026" and "SAR HA PEER De ent raaicke". The
+         * threshold let genuine nonsense through, which is the one failure
+         * this product cannot have: the listener has no way to know.
+         *
+         * Measured 2026-09-05, as the word-weighted page confidence the
+         * parser now reports:
+         *
+         *     academic scan        0.914   reads correctly
+         *     textbook scan        0.883   reads correctly
+         *     ppt screenshot       0.872   reads correctly
+         *     newspaper PHOTO      0.657   unreadable garbage
+         *     newspaper thumbnail  0.579   unreadable garbage
+         *
+         * Everything good sits at or above 0.87 and everything broken at or
+         * below 0.66, so 0.75 sits in an empty gap rather than on a cliff.
+         *
+         * The statistic matters as much as the number. Averaging over blocks
+         * instead put those same pages 0.06 apart (0.629 garbage against 0.688
+         * good) with no safe threshold between them, because it gave a
+         * two-word caption the same weight as a 200-word article.
+         *
+         * Text size was the other candidate and the data refutes it: the
+         * academic scan reads correctly at a 19.0 px median word height, and
+         * the failing photo measured 19.8 px. Size is not what separates them;
+         * photographic quality is, and confidence is what sees it.
          */
-        const val USABLE_CONFIDENCE = 0.60f
+        const val USABLE_CONFIDENCE = 0.75f
+
+        /**
+         * Below this a page is retried rotated a quarter turn.
+         *
+         * Deliberately lower than [USABLE_CONFIDENCE] and left at the old
+         * value. A genuinely sideways page scores around 0.36 and recovers to
+         * 0.87, so 0.60 catches it comfortably; tying this to the stricter
+         * reading threshold would spend a second full recognition pass -- up
+         * to 13 s on this phone -- on every merely-mediocre page, to no end.
+         */
+        const val ROTATION_RETRY_CONFIDENCE = 0.60f
 
         fun empty(width: Int, height: Int, elapsedMs: Long = 0L) =
             OcrPage(width, height, emptyList(), 0f, elapsedMs)

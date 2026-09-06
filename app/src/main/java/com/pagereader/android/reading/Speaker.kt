@@ -23,4 +23,31 @@ interface Speaker {
 
     /** Called with the utterance id when a queued utterance finishes. */
     fun setOnDone(listener: (String) -> Unit)
+
+    /**
+     * Called with the utterance id when a queued utterance is interrupted
+     * before finishing -- the engine's `onStop`, not its `onDone`. These used
+     * to be routed to the same place, which reads "cut off mid-word" as
+     * "finished cleanly" and lets [PagePlayer] advance past a sentence the
+     * listener never actually heard. Kept as a separate channel so the player
+     * can tell the two apart and re-speak rather than silently skip.
+     */
+    fun setOnStopped(listener: (String) -> Unit)
+
+    /**
+     * Requests audio focus for the duration of playback. Called once per
+     * [PagePlayer.play]. Without this, a notification tone or another app's
+     * own speech plays right over the page being read with no yielding on
+     * either side -- audible, confusing, and on a phone this is the primary
+     * output there is no visual cue that it happened.
+     */
+    fun requestFocus()
+
+    /**
+     * Releases focus requested by [requestFocus]. Called whenever playback
+     * stops for any reason -- pause, explicit stop, or reaching the end of
+     * the page -- so this app is not still holding the stream hostage while
+     * silent.
+     */
+    fun abandonFocus()
 }

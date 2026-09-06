@@ -2,33 +2,22 @@ package com.pagereader.android
 
 import android.Manifest
 import android.content.pm.PackageManager
+import android.media.AudioManager
 import android.os.Bundle
 import android.util.Log
 import android.view.KeyEvent
+import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
-import androidx.compose.foundation.gestures.detectVerticalDragGestures
-import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.camera.view.PreviewView
-import androidx.compose.foundation.Canvas
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.gestures.detectTapGestures
-import androidx.compose.foundation.layout.statusBarsPadding
-import androidx.compose.material3.Text
-import androidx.compose.runtime.Composable
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Size
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.unit.dp
-import androidx.compose.ui.viewinterop.AndroidView
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.core.content.ContextCompat
 import com.pagereader.android.audio.TtsManager
 import com.pagereader.android.camera.CameraManager
@@ -37,18 +26,22 @@ import com.pagereader.android.detect.PageDetector
 import com.pagereader.android.detect.PageObservation
 import com.pagereader.android.detect.YoloDnnEngine
 import com.pagereader.android.detect.YoloPageDetector
+import com.pagereader.android.guidance.FramingState
 import com.pagereader.android.guidance.GuidancePolicy
+import com.pagereader.android.guidance.Instruction
 import com.pagereader.android.guidance.ShakeDetector
 import com.pagereader.android.dewarp.DewarpResult
 import com.pagereader.android.ocr.OcrPage
 import com.pagereader.android.reading.CaptureQuality
-import com.pagereader.android.reading.ExploreScreen
 import com.pagereader.android.reading.PagePlayer
-import com.pagereader.android.reading.ReadingScreen
 import com.pagereader.android.storage.CaptureStore
 import com.pagereader.android.ocr.TesseractOcr
 import com.pagereader.android.dewarp.PageDewarper
 import com.pagereader.android.telemetry.SessionRecorder
+import com.pagereader.android.ui.CaptureScreen
+import com.pagereader.android.ui.CaptureStage
+import com.pagereader.android.ui.PageScreen
+import com.pagereader.android.ui.ProcessingScreen
 import com.pagereader.android.ui.theme.PageReaderTheme
 import org.opencv.android.OpenCVLoader
 import java.util.concurrent.Executors
@@ -103,6 +96,51 @@ class MainActivity : ComponentActivity() {
     private val readingPage = mutableStateOf<OcrPage?>(null)
     private val currentBlockId = mutableStateOf<Int?>(null)
 
+    /**
+     * The live guidance decision, split into the two fields the framing card
+     * draws.
+     *
+     * `handleFrame` used to keep only `latestObservation` and a debug string,
+     * because guidance was spoken and nothing else. The card has to show the
+     * same words, so the decision's own fields are held rather than parsed
+     * back out of the debug line. `instruction` is the correction currently in
+     * force and may persist across frames; `utterance` -- the one frame it
+     * should be *said* -- stays with the TTS path and is deliberately not
+     * mirrored here, or the card would blink once and clear.
+     */
+    private val latestInstruction = mutableStateOf<Instruction?>(null)
+    private val latestFramingState = mutableStateOf(FramingState.SEARCHING)
+
+    /**
+     * What the processing screen is showing while the pipeline runs.
+     *
+     * The user cannot see a spinner, so these exist for the sighted half of
+     * the audience; the spoken progress at quarter marks is the channel that
+     * matters and is unchanged.
+     */
+    private val captureStage = mutableStateOf(CaptureStage.CAPTURING)
+    private val ocrPercent = mutableIntStateOf(0)
+
+    /**
+     * The captured page, small enough to draw.
+     *
+     * Downscaled hard on purpose: a 3000 px page as ARGB_8888 is about 24 MB,
+     * and this phone has already killed the process once over a full-
+     * resolution bitmap. Nothing on screen can resolve more than this anyway.
+     */
+    private val pagePreview = mutableStateOf<ImageBitmap?>(null)
+
+    /**
+     * Playback state, mirrored into Compose.
+     *
+     * `PagePlayer` is a plain class with plain fields -- reading `isPlaying`
+     * from a composable would not recompose when it changed. The player
+     * already reports every transition through its state callback, so these
+     * are written there rather than polled.
+     */
+    private val playerIsPlaying = mutableStateOf(false)
+    private val playerProgress = mutableStateOf(0f)
+
     private lateinit var store: CaptureStore
     private var currentCaptureId: String? = null
 
@@ -114,10 +152,23 @@ class MainActivity : ComponentActivity() {
     private val player: PagePlayer by lazy {
         PagePlayer(ttsManager) { p ->
             currentBlockId.value = p.currentBlock?.id
+            playerIsPlaying.value = p.isPlaying
+            playerProgress.value =
+                if (p.blockCount == 0) 0f
+                else (p.position.blockIndex + 1).toFloat() / p.blockCount
             currentCaptureId?.let { store.savePosition(it, p.position) }
         }
     }
     private var lastProgressSpokenAt = 0
+
+    /**
+     * True only when the player was paused *by a focus change*, not by the
+     * user pausing or stopping deliberately. `AUDIOFOCUS_GAIN` after a
+     * transient loss should resume reading automatically; after a user's own
+     * pause it must not, or tapping pause during a phone call would have the
+     * page start talking again the moment the call ends.
+     */
+    private var pausedByFocusLoss = false
 
     private val cameraPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
@@ -127,6 +178,15 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
 
+        // A page is minutes of audio with nobody touching the screen. Without
+        // this the display sleeps and HarmonyOS PowerGenie suspends the whole
+        // process a few seconds later -- the `Pged-Freezer` mechanism
+        // documented in CLAUDE.md -- and speech stops dead with no way back.
+        // Set once for the whole activity: there is no state, FRAMING or
+        // READING, where letting the screen sleep is correct, and toggling it
+        // per mode would only race PowerGenie for no benefit.
+        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+
         OpenCVLoader.initLocal()
 
         ttsManager = TtsManager(this)
@@ -134,6 +194,41 @@ class MainActivity : ComponentActivity() {
         store = CaptureStore(this)
         store.prune()
         recorder.start()
+
+        // Wired here, once, rather than inside the `player` lazy block: the
+        // listener only needs to run when a focus event actually happens,
+        // by which point `player` is guaranteed to exist, and referencing it
+        // from this lambda does not force it into existence any earlier.
+        ttsManager.setOnFocusChange { focusChange ->
+            when (focusChange) {
+                AudioManager.AUDIOFOCUS_LOSS_TRANSIENT,
+                AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK -> {
+                    // Transient: a notification, a nav prompt, a short system
+                    // sound. Worth resuming once it clears, so remember that
+                    // this pause was ours to undo, not the user's.
+                    if (player.isPlaying) {
+                        pausedByFocusLoss = true
+                        player.pause()
+                    }
+                }
+                AudioManager.AUDIOFOCUS_LOSS -> {
+                    // Permanent loss -- another app now owns audio for good
+                    // (a call, music playback taking over). Pause and leave it
+                    // paused: unlike the transient case, there is no "it will
+                    // clear itself" to resume into.
+                    if (player.isPlaying) player.pause()
+                }
+                AudioManager.AUDIOFOCUS_GAIN -> {
+                    if (pausedByFocusLoss) {
+                        pausedByFocusLoss = false
+                        // Queue rather than flush: nothing of ours is playing
+                        // to cut off, and flushing here would only race
+                        // whatever just gave focus back.
+                        player.play(flush = false)
+                    }
+                }
+            }
+        }
 
         shakeDetector = ShakeDetector(
             context = this,
@@ -144,7 +239,11 @@ class MainActivity : ComponentActivity() {
             onShake = {
                 if (mode.value != Mode.FRAMING && player.isPlaying) {
                     player.pause()
-                    ttsManager.say("Stopped.")
+                    // Queue, not flush: pause() already stopped the engine
+                    // and nothing of the page is left playing, so QUEUE_FLUSH
+                    // here would only risk eating the tail of this very
+                    // announcement.
+                    ttsManager.say("Stopped.", flush = false)
                 }
             },
             onStable = { }
@@ -159,117 +258,53 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             PageReaderTheme {
-                Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        // Double-tap anywhere is the second manual shutter. The
-                        // whole screen is the target because a blind user cannot
-                        // aim at a button, and double- rather than single-tap so
-                        // a hand steadying the phone does not fire it.
-                        // Framing only. Left attached in every mode this
-                        // competed with ReadingScreen's own tap handling: both
-                        // saw each touch, so a double-tap toggled play twice
-                        // AND fired a capture over the page being read. In
-                        // reading mode the shutter lives inside ReadingScreen's
-                        // single recognizer instead.
-                        .then(
-                            if (mode.value == Mode.FRAMING) {
-                                Modifier.pointerInput(Unit) {
-                                    detectTapGestures(
-                                        onDoubleTap = { takeStill(auto = false) }
-                                    )
-                                }
-                            } else {
-                                Modifier
-                            }
+                when (mode.value) {
+                    // The preview is only bound once the permission is in, so
+                    // there is nothing to draw before that; the spoken prompt
+                    // from the permission callback covers the gap.
+                    Mode.FRAMING -> if (hasCameraPermission.value) {
+                        CaptureScreen(
+                            observation = latestObservation.value,
+                            instruction = latestInstruction.value,
+                            state = latestFramingState.value,
+                            debugLine = debugLine.value,
+                            onShutter = { takeStill(auto = false) },
+                            onPreviewView = cameraManager::bindCamera,
+                            modifier = Modifier.fillMaxSize(),
                         )
-                        // Entry into explore only. Leaving is owned by
-                        // ExploreScreen's own gesture loop: running this
-                        // detector there too meant two recognizers over one
-                        // drag stream, and an ordinary fast upward sweep --
-                        // the motion explore exists to support -- silently
-                        // kicked the user back to reading. Skipped under
-                        // TalkBack, which owns swipes.
-                        .then(
-                            if (mode.value == Mode.READING && !isTalkBackEnabled()) {
-                                Modifier.pointerInput(Unit) {
-                                    detectVerticalDragGestures { _, delta ->
-                                        if (delta < -SWIPE_THRESHOLD_PX) {
-                                            mode.value = Mode.EXPLORING
-                                            ttsManager.say(
-                                                "Explore mode. Drag a finger over the page. " +
-                                                    "Swipe up over an empty area to go back."
-                                            )
-                                        }
-                                    }
-                                }
-                            } else {
-                                Modifier
-                            }
-                        )
-                ) {
-                    when (mode.value) {
-                        Mode.FRAMING -> if (hasCameraPermission.value) {
-                            AndroidView(
-                                factory = { context ->
-                                    PreviewView(context).also(cameraManager::bindCamera)
-                                },
-                                modifier = Modifier.fillMaxSize()
-                            )
-                            PageOverlay(
-                                observation = latestObservation.value,
-                                modifier = Modifier.fillMaxSize()
-                            )
-                        }
-
-                        Mode.READING -> readingPage.value?.let { page ->
-                            ReadingScreen(
-                                page = page,
-                                currentBlockId = currentBlockId.value,
-                                onTogglePlay = { player.toggle() },
-                                onRepeatBlock = { player.repeatBlock() },
-                                onNextPage = { returnToCamera() },
-                                onReadFrom = { block ->
-                                    player.jumpToBlockId(block.id)
-                                    player.play()
-                                },
-                                modifier = Modifier.fillMaxSize(),
-                            )
-                        }
-
-                        Mode.EXPLORING -> readingPage.value?.let { page ->
-                            ExploreScreen(
-                                page = page,
-                                talkBackEnabled = isTalkBackEnabled(),
-                                onRegionEntered = { block ->
-                                    hapticTick()
-                                    ttsManager.say(
-                                        com.pagereader.android.ocr.BlockLabels.title(block)
-                                    )
-                                },
-                                onReadRegion = { block ->
-                                    player.jumpToBlockId(block.id)
-                                    player.play()
-                                },
-                                onExit = {
-                                    mode.value = Mode.READING
-                                    ttsManager.say("Reading mode.")
-                                },
-                                modifier = Modifier.fillMaxSize(),
-                            )
-                        }
                     }
-                    Text(
-                        text = debugLine.value,
-                        modifier = Modifier
-                            .align(Alignment.TopStart)
-                            .statusBarsPadding()
-                            .padding(16.dp)
-                            // Developer debug only. Without this the screen
-                            // reader announces it as page content, which is
-                            // noise the actual user cannot act on.
-                            .clearAndSetSemantics { }
+
+                    // Deliberately camera-free. The preview used to stay live
+                    // for the two to fourteen seconds this takes, which said
+                    // "still framing" to anyone watching the screen while the
+                    // app had in fact already committed to a photo.
+                    Mode.PROCESSING -> ProcessingScreen(
+                        stage = captureStage.value,
+                        percent = ocrPercent.intValue,
+                        pagePreview = pagePreview.value,
+                        modifier = Modifier.fillMaxSize(),
                     )
+
+                    Mode.READING -> readingPage.value?.let { page ->
+                        PageScreen(
+                            page = page,
+                            pageImage = pagePreview.value,
+                            currentBlockId = currentBlockId.value,
+                            isPlaying = playerIsPlaying.value,
+                            progressFraction = playerProgress.value,
+                            talkBackEnabled = isTalkBackEnabled(),
+                            onTogglePlay = { player.toggle() },
+                            onPreviousBlock = { player.previousBlock() },
+                            onNextBlock = { player.nextBlock() },
+                            onReadFrom = { block ->
+                                hapticTick()
+                                player.jumpToBlockId(block.id)
+                                player.play()
+                            },
+                            onNewPage = { returnToCamera() },
+                            modifier = Modifier.fillMaxSize(),
+                        )
+                    }
                 }
             }
         }
@@ -327,12 +362,21 @@ class MainActivity : ComponentActivity() {
             // cuts the reading dead, and the capture latch can fire a second,
             // unrequested shutter mid-page. Both were reachable simply by
             // lowering the phone after a capture.
-            if (mode.value != Mode.FRAMING) return
+            // `capturing` stays true for the whole pipeline, not just the
+            // shutter. On hardware the first page takes 13.6 s to recognise
+            // (1.7 s once Tesseract is warm), and the mode only leaves FRAMING
+            // when that finishes -- so without this the policy kept guiding and
+            // auto-capture fired a second time mid-processing, replacing the
+            // page the user was about to hear. Measured on the JSC-AL50.
+            if (mode.value != Mode.FRAMING || capturing) return
 
             latestObservation.value = observation
 
             val shaking = shakeDetector.isShaking
             val decision = policy.update(observation, shaking, System.currentTimeMillis())
+
+            latestInstruction.value = decision.instruction
+            latestFramingState.value = decision.state
 
             decision.utterance?.let { ttsManager.speak(it) }
             if (decision.capture) {
@@ -394,13 +438,24 @@ class MainActivity : ComponentActivity() {
         if (capturing) return
         capturing = true
 
+        // Leave the camera the instant the shutter fires, not when the page is
+        // ready. Everything after this point is work on a photo that has
+        // already been taken, and showing a live preview over it invites the
+        // user to keep adjusting a frame that no longer matters.
+        captureStage.value = CaptureStage.CAPTURING
+        ocrPercent.intValue = 0
+        pagePreview.value = null
+        mode.value = Mode.PROCESSING
+
         ttsManager.earcon()
         ttsManager.say("Captured. Reading the page.")
 
         try {
             cameraManager.capture(
                 onResult = { mat ->
-                    capturing = false
+                    // NOT cleared here. The shutter is the start of the work,
+                    // not the end of it; `capturing` is released once the page
+                    // has been read or has failed.
                     Log.i(TAG, "captured ${mat.width()}x${mat.height()} (auto=$auto)")
                     debugLine.value = "captured ${mat.width()}x${mat.height()}"
                     // Ownership of `mat` passes to the executor, which releases
@@ -411,6 +466,7 @@ class MainActivity : ComponentActivity() {
                 },
                 onFailure = { message ->
                     capturing = false
+                    mode.value = Mode.FRAMING
                     Log.w(TAG, "capture failed: $message")
                     ttsManager.say(message)
                 }
@@ -420,6 +476,7 @@ class MainActivity : ComponentActivity() {
             // shutter never fires again -- silently, which is the failure mode
             // this app can least afford.
             capturing = false
+            mode.value = Mode.FRAMING
             Log.e(TAG, "capture threw", t)
             ttsManager.say("The camera failed. Try again.")
         }
@@ -436,6 +493,7 @@ class MainActivity : ComponentActivity() {
      * see.
      */
     private fun dewarpOffThread(still: org.opencv.core.Mat) {
+        runOnUiThread { captureStage.value = CaptureStage.FLATTENING }
         captureExecutor.execute {
             val result = try {
                 stillDewarper.dewarp(still)
@@ -447,7 +505,12 @@ class MainActivity : ComponentActivity() {
             } finally {
                 still.release()
             }
+            // Built here, on this thread: the conversion walks every pixel of
+            // a multi-megapixel image and would stall the main thread right
+            // after the shutter if it were done in the hop below.
+            val thumbnail = toImageBitmap(result.page)
             runOnUiThread {
+                pagePreview.value = thumbnail
                 lastPage?.release()
                 lastPage = result
                 val p = result.page
@@ -475,22 +538,36 @@ class MainActivity : ComponentActivity() {
             // Speak on every attempt. Returning silently after the first
             // failure meant every later shutter said "Captured. Reading the
             // page." and then nothing at all, permanently.
-            runOnUiThread { ttsManager.say("I cannot read text on this device.") }
+            runOnUiThread {
+                capturing = false
+                mode.value = Mode.FRAMING
+                ttsManager.say("I cannot read text on this device.")
+            }
             return
         }
+        runOnUiThread { captureStage.value = CaptureStage.READING_TEXT }
         val engine = ocr ?: TesseractOcr.create(this) { percent ->
             // Called on this thread by Tesseract; hop to main to speak.
+            // One progress source, two channels: the bar moves on every
+            // report, the voice only at quarter marks -- a number every
+            // percent would be worse than saying nothing.
             val bucket = percent / 25
-            if (bucket > lastProgressSpokenAt) {
-                lastProgressSpokenAt = bucket
-                runOnUiThread { ttsManager.say("$percent percent", flush = false) }
+            val speak = bucket > lastProgressSpokenAt
+            if (speak) lastProgressSpokenAt = bucket
+            runOnUiThread {
+                ocrPercent.intValue = percent
+                if (speak) ttsManager.say("$percent percent", flush = false)
             }
         }?.also { ocr = it }
 
         if (engine == null) {
             ocrUnavailable = true
             Log.e(TAG, "OCR unavailable; language data could not be prepared")
-            runOnUiThread { ttsManager.say("I cannot read text on this device.") }
+            runOnUiThread {
+                capturing = false
+                mode.value = Mode.FRAMING
+                ttsManager.say("I cannot read text on this device.")
+            }
             return
         }
 
@@ -500,6 +577,28 @@ class MainActivity : ComponentActivity() {
         } catch (t: Throwable) {
             Log.e(TAG, "recognition threw", t)
             null
+        }
+        runOnUiThread { captureStage.value = CaptureStage.FINISHING }
+
+        // The projection has to be in the same frame as the boxes drawn on it.
+        // Space G is whatever orientation OCR actually read in, so a page
+        // recovered by the rotation retry needs its picture turned to match --
+        // otherwise every tappable region sits a quarter turn from the words
+        // it claims to cover. Only rebuilt in that case; the common one
+        // already has the right thumbnail from the dewarp.
+        if (result != null && result.quarterTurnsClockwise == 1) {
+            val turned = org.opencv.core.Mat()
+            try {
+                org.opencv.core.Core.rotate(
+                    page.page, turned, org.opencv.core.Core.ROTATE_90_CLOCKWISE
+                )
+                val rotatedPreview = toImageBitmap(turned)
+                runOnUiThread { pagePreview.value = rotatedPreview }
+            } catch (t: Throwable) {
+                Log.w(TAG, "could not rotate the page preview", t)
+            } finally {
+                turned.release()
+            }
         }
 
         // Persist here, on this thread, before hopping back. Encoding a
@@ -532,7 +631,10 @@ class MainActivity : ComponentActivity() {
         }
 
         runOnUiThread {
+            // The pipeline is done either way; re-arm the shutter.
+            capturing = false
             if (result == null) {
+                mode.value = Mode.FRAMING
                 ttsManager.say("Something went wrong reading the page. Try again.")
                 return@runOnUiThread
             }
@@ -554,6 +656,9 @@ class MainActivity : ComponentActivity() {
             val verdict = CaptureQuality.assess(page.clipped, result)
             lastVerdictWasRetake = !verdict.usable
             if (!verdict.usable) {
+                // Back to the camera, not stranded on a processing screen for
+                // a page that will never be read.
+                mode.value = Mode.FRAMING
                 verdict.message?.let { ttsManager.say(it) }
                 return@runOnUiThread
             }
@@ -565,10 +670,15 @@ class MainActivity : ComponentActivity() {
             mode.value = Mode.READING
             currentCaptureId = savedId
             player.load(result)
+            // Queues rather than flushes: a retake can land here while the
+            // previous page's "could not read" or verdict message is still
+            // finishing, and QUEUE_FLUSH would clip the tail of that message
+            // for no benefit -- nothing of *this* page is playing yet to
+            // protect by cutting it off.
             ttsManager.say(
                 com.pagereader.android.ocr.BlockLabels.pageSummary(result) +
                     " Double tap for the next page.",
-                flush = true,
+                flush = false,
             )
             // Queue behind the summary. play() flushes by default, which
             // cancelled the summary milliseconds after it started -- every
@@ -615,6 +725,12 @@ class MainActivity : ComponentActivity() {
         // devices that need the use-case swap. Heal it rather than coming back
         // to a preview that never speaks.
         cameraManager.recoverIfInterrupted()
+        // Safety valve. `capturing` now spans the whole capture-to-speech
+        // pipeline, so a process paused mid-recognition would otherwise come
+        // back with a dead shutter and no way to say why. Clearing it here can
+        // briefly disagree with CameraManager's own in-flight guard, which
+        // costs a spoken "Captured" for a shot that does not happen -- a far
+        // better failure than a shutter that never works again.
         capturing = false
     }
 
@@ -646,13 +762,71 @@ class MainActivity : ComponentActivity() {
     }
 
     /** Which screen is in front. */
-    private enum class Mode { FRAMING, READING, EXPLORING }
+    /**
+     * The three states the app is actually in, in the order they happen.
+     *
+     * There is no separate explore mode any more: the reading screen draws the
+     * page itself and a tap on a region is the same gesture explore existed to
+     * provide, so keeping it as a mode meant two screens competing for one
+     * drag stream.
+     */
+    private enum class Mode { FRAMING, PROCESSING, READING }
 
     /** True while the last capture was judged unusable, so volume up retakes. */
     private var lastVerdictWasRetake = false
 
     /** Back to the camera for another try, or for the next page. */
     private fun retake() = returnToCamera()
+
+    /**
+     * A drawable copy of a BGR page, small enough to hold in memory.
+     *
+     * Two conversions that are easy to skip and both wrong to skip. The long
+     * side is capped because a full-resolution page as ARGB_8888 is tens of
+     * megabytes and this phone has already killed the process over exactly
+     * that. And OpenCV hands out BGR while `matToBitmap` reads a three-channel
+     * Mat as RGB, so without the colour conversion the page comes out with
+     * red and blue swapped -- which on a photograph of white paper is subtle
+     * enough to look like a camera white-balance problem rather than a bug.
+     *
+     * Returns null rather than throwing: a missing picture costs a sighted
+     * viewer some context, while a crash costs the listener the page.
+     */
+    private fun toImageBitmap(bgr: org.opencv.core.Mat): ImageBitmap? {
+        if (bgr.empty()) return null
+        val scaled = org.opencv.core.Mat()
+        val rgba = org.opencv.core.Mat()
+        return try {
+            val longSide = maxOf(bgr.width(), bgr.height()).toDouble()
+            if (longSide > PREVIEW_LONG_SIDE) {
+                val f = PREVIEW_LONG_SIDE / longSide
+                org.opencv.imgproc.Imgproc.resize(
+                    bgr, scaled,
+                    org.opencv.core.Size(
+                        Math.round(bgr.width() * f).toDouble(),
+                        Math.round(bgr.height() * f).toDouble(),
+                    ),
+                    0.0, 0.0, org.opencv.imgproc.Imgproc.INTER_AREA,
+                )
+            } else {
+                bgr.copyTo(scaled)
+            }
+            org.opencv.imgproc.Imgproc.cvtColor(
+                scaled, rgba, org.opencv.imgproc.Imgproc.COLOR_BGR2RGBA
+            )
+            val bitmap = android.graphics.Bitmap.createBitmap(
+                rgba.width(), rgba.height(), android.graphics.Bitmap.Config.ARGB_8888
+            )
+            org.opencv.android.Utils.matToBitmap(rgba, bitmap)
+            bitmap.asImageBitmap()
+        } catch (t: Throwable) {
+            Log.w(TAG, "could not build a page preview", t)
+            null
+        } finally {
+            scaled.release()
+            rgba.release()
+        }
+    }
 
     /**
      * Leaves reading and re-arms the camera.
@@ -668,9 +842,14 @@ class MainActivity : ComponentActivity() {
         readingPage.value = null
         currentCaptureId = null
         currentBlockId.value = null
+        pagePreview.value = null
         mode.value = Mode.FRAMING
         policy.reset()
-        ttsManager.say("Ready for the next page. Hold the phone over it.")
+        // Queues rather than flushes: player.stop() above already stopped
+        // anything of the page, so there is nothing to protect by cutting
+        // off, and a stray late utterance from that stop should not be able
+        // to race this one away.
+        ttsManager.say("Ready for the next page. Hold the phone over it.", flush = false)
     }
 
     /**
@@ -699,7 +878,13 @@ class MainActivity : ComponentActivity() {
          * rests on the display constantly. A false positive here is far more
          * disorienting than a missed swipe, which simply needs repeating.
          */
-        private const val SWIPE_THRESHOLD_PX = 40f
+        /**
+         * Long side of the on-screen copy of the page, in pixels.
+         *
+         * Above the densest screen this app will ever run on, and an eighth of
+         * the memory of the full-resolution page it is made from.
+         */
+        private const val PREVIEW_LONG_SIDE = 1400.0
 
         /**
          * How long teardown waits for an in-flight recognition. Long enough to
@@ -711,70 +896,3 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-/**
- * Maps analysis-frame coordinates onto the canvas the way PreviewView's
- * FIT_CENTER lays out the preview: scale uniformly by the *smaller* of the two
- * axis ratios so the whole frame fits, then centre it. The short axis gets a
- * positive offset and letterboxes.
- *
- * This deliberately mirrors `PreviewView.ScaleType.FIT_CENTER` in
- * `CameraManager.bindCamera`. **Change one and you must change the other** or
- * the overlay stops sitting on the real document boundary.
- *
- * It used to be FILL_CENTER, matching the preview at the time. That cropped the
- * 4:3 analysis stream into a 9:20 window and hid ~20% of the frame width on each
- * side, so a page could be well outside the visible preview while still sitting
- * comfortably inside the frame the detector and the still capture actually use.
- * Testing on device on 2026-09-05 that showed up as "the left and right edges
- * need the page ~40% off before anything is said" -- 40% being exactly the
- * hidden fraction. Letterboxing shows the true capture area, so what is on
- * screen is what will be photographed.
- */
-private class FrameTransform(frameWidth: Int, frameHeight: Int, canvas: Size) {
-    val scale: Float = minOf(canvas.width / frameWidth, canvas.height / frameHeight)
-    val offsetX: Float = (canvas.width - frameWidth * scale) / 2f
-    val offsetY: Float = (canvas.height - frameHeight * scale) / 2f
-
-    fun map(x: Double, y: Double) =
-        Offset(x.toFloat() * scale + offsetX, y.toFloat() * scale + offsetY)
-}
-
-/**
- * Sighted-developer debug view only. The blind user never looks at this; every
- * signal it draws also exists as speech or as a line in the session log.
- */
-@Composable
-private fun PageOverlay(observation: PageObservation?, modifier: Modifier = Modifier) {
-    Canvas(modifier = modifier) {
-        val o = observation ?: return@Canvas
-        if (o.frameWidth == 0 || o.frameHeight == 0) return@Canvas
-        val t = FrameTransform(o.frameWidth, o.frameHeight, size)
-        val stroke = 6f
-
-        val quad = o.quad
-        if (quad != null) {
-            // Green once the detector is confident enough to be acted on,
-            // amber when it is guessing.
-            val colour = if (o.confidence >= 0.35f) Color.Green else Color(0xFFFFA000)
-            val points = quad.map { t.map(it.x, it.y) }
-            for (i in points.indices) {
-                drawLine(colour, points[i], points[(i + 1) % points.size], stroke)
-            }
-        }
-
-        // Clipped borders drawn as a red bar along the edge the page runs off.
-        val bar = 14f
-        o.clipped.forEach { side ->
-            when (side) {
-                com.pagereader.android.detect.Side.LEFT ->
-                    drawLine(Color.Red, Offset(bar / 2, 0f), Offset(bar / 2, size.height), bar)
-                com.pagereader.android.detect.Side.RIGHT ->
-                    drawLine(Color.Red, Offset(size.width - bar / 2, 0f), Offset(size.width - bar / 2, size.height), bar)
-                com.pagereader.android.detect.Side.TOP ->
-                    drawLine(Color.Red, Offset(0f, bar / 2), Offset(size.width, bar / 2), bar)
-                com.pagereader.android.detect.Side.BOTTOM ->
-                    drawLine(Color.Red, Offset(0f, size.height - bar / 2), Offset(size.width, size.height - bar / 2), bar)
-            }
-        }
-    }
-}

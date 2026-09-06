@@ -25,7 +25,10 @@ class PagePlayerTest {
 
         val spoken = mutableListOf<Utterance>()
         var stops = 0
+        var focusRequests = 0
+        var focusAbandons = 0
         private var onDone: (String) -> Unit = {}
+        private var onStopped: (String) -> Unit = {}
 
         override fun speak(text: String, utteranceId: String, flush: Boolean) {
             spoken += Utterance(text, utteranceId, flush)
@@ -39,6 +42,18 @@ class PagePlayerTest {
             onDone = listener
         }
 
+        override fun setOnStopped(listener: (String) -> Unit) {
+            onStopped = listener
+        }
+
+        override fun requestFocus() {
+            focusRequests++
+        }
+
+        override fun abandonFocus() {
+            focusAbandons++
+        }
+
         /** Signals that the most recent utterance finished. */
         fun finishLast() {
             spoken.lastOrNull()?.let { onDone(it.id) }
@@ -46,6 +61,14 @@ class PagePlayerTest {
 
         /** Signals a done for an utterance that is no longer current. */
         fun finish(id: String) = onDone(id)
+
+        /** Signals that the most recent utterance was interrupted, not finished. */
+        fun stopLast() {
+            spoken.lastOrNull()?.let { onStopped(it.id) }
+        }
+
+        /** Signals a stop for an utterance id that may or may not still be current. */
+        fun stopUtterance(id: String) = onStopped(id)
 
         val lastText: String? get() = spoken.lastOrNull()?.text
     }
@@ -363,5 +386,92 @@ class PagePlayerTest {
         speaker.finish(id)
         assertEquals(PagePlayer.Position(0, 0), player.position)
         assertFalse(player.isPlaying)
+    }
+
+    /**
+     * The interrupted-vs-finished distinction this class exists to make. A
+     * `stopped` for the sentence currently outstanding means something else
+     * flushed us mid-sentence -- the player must re-speak the same sentence,
+     * queued behind whatever interrupted, not treat it as progress.
+     */
+    @Test
+    fun anInterruptedUtteranceRespeaksTheSameSentenceWithoutAdvancing() {
+        val speaker = FakeSpeaker()
+        val player = PagePlayer(speaker)
+        player.load(page(block("One two three."), block("Four five six.")))
+        player.play()
+
+        speaker.stopLast()
+
+        assertEquals("an interruption must not move the position",
+            PagePlayer.Position(0, 0), player.position)
+        assertEquals("One two three.", speaker.lastText)
+        assertFalse("the restart must queue, not flush, behind whatever interrupted",
+            speaker.spoken.last().flush)
+        assertTrue("playback must continue after a single interruption", player.isPlaying)
+    }
+
+    /** A completed utterance (onDone) advances normally, same as before. */
+    @Test
+    fun aCompletedUtteranceAdvancesNormally() {
+        val speaker = FakeSpeaker()
+        val player = PagePlayer(speaker)
+        player.load(page(block("One."), block("Two.")))
+        player.play()
+
+        speaker.finishLast()
+
+        assertEquals(PagePlayer.Position(1, 0), player.position)
+        assertEquals("Two.", speaker.lastText)
+        assertTrue(player.isPlaying)
+    }
+
+    /**
+     * Guards the loop: something that keeps flushing the same sentence must
+     * eventually give up rather than restart it forever, which would read as
+     * a stuck record and never reach the rest of the page.
+     */
+    @Test
+    fun threeConsecutiveInterruptionsAtTheSamePositionStopPlaybackRatherThanLooping() {
+        val speaker = FakeSpeaker()
+        val player = PagePlayer(speaker)
+        player.load(page(block("Stuck sentence."), block("Never reached.")))
+        player.play()
+
+        speaker.stopLast() // 1st restart
+        assertTrue(player.isPlaying)
+        speaker.stopLast() // 2nd restart
+        assertTrue(player.isPlaying)
+        speaker.stopLast() // 3rd restart
+        assertTrue(player.isPlaying)
+        speaker.stopLast() // 4th: past the limit
+
+        assertFalse("must stop rather than restart a 4th time", player.isPlaying)
+        assertEquals("must not have advanced past the stuck sentence",
+            PagePlayer.Position(0, 0), player.position)
+    }
+
+    /**
+     * `pause()` clears `outstanding` before calling `speaker.stop()`, so the
+     * stop that causes arrives here with an id that no longer matches
+     * anything current. This must be silently ignored, not treated as an
+     * interruption to recover from -- the player asked for this stop itself.
+     */
+    @Test
+    fun aSelfInflictedStopAfterPauseDoesNotRespeak() {
+        val speaker = FakeSpeaker()
+        val player = PagePlayer(speaker)
+        player.load(page(block("One two three.")))
+        player.play()
+        val id = speaker.spoken.last().id
+        val before = speaker.spoken.size
+
+        player.pause()
+        speaker.stopUtterance(id)
+
+        assertEquals("a self-inflicted stop must not trigger a re-speak",
+            before, speaker.spoken.size)
+        assertFalse(player.isPlaying)
+        assertEquals(PagePlayer.Position(0, 0), player.position)
     }
 }

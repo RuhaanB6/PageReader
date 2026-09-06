@@ -69,8 +69,24 @@ class PagePlayer(
     private var utteranceSeq = 0
     private var outstanding: String? = null
 
+    /**
+     * Consecutive times the current sentence has had to be re-spoken because
+     * something else flushed it mid-utterance -- a focus loss, a framing cue
+     * that should never fire while reading but might, another app's own TTS
+     * use. Reset whenever a sentence finishes cleanly and whenever the
+     * listener deliberately moves ([load], [jumpTo]).
+     *
+     * Bounded so a broken or endlessly-contested audio session cannot turn
+     * "recover from one interruption" into "read this sentence forever,
+     * restarting it every time it gets cut off again" -- silence would be
+     * bad, but a stuck loop that never reaches the rest of the page is worse,
+     * because it gives no indication anything is wrong at all.
+     */
+    private var restartCount = 0
+
     init {
         speaker.setOnDone { id -> onUtteranceDone(id) }
+        speaker.setOnStopped { id -> onUtteranceStopped(id) }
     }
 
     /**
@@ -95,6 +111,7 @@ class PagePlayer(
 
         position = clamp(from)
         isFinished = false
+        restartCount = 0
         onStateChanged(this)
     }
 
@@ -117,6 +134,11 @@ class PagePlayer(
         if (playables.isEmpty() || isPlaying) return
         isPlaying = true
         isFinished = false
+        // Requested every time play() starts, not just once at load(): the
+        // player pauses and resumes constantly (shake-stop, a jump, a focus
+        // loss elsewhere) and each of those releases focus on the way out, so
+        // there is no "still held from last time" to rely on.
+        speaker.requestFocus()
         speakCurrent(flush = flush)
         onStateChanged(this)
     }
@@ -126,6 +148,7 @@ class PagePlayer(
         isPlaying = false
         outstanding = null
         speaker.stop()
+        speaker.abandonFocus()
         onStateChanged(this)
     }
 
@@ -136,6 +159,7 @@ class PagePlayer(
         isPlaying = false
         outstanding = null
         speaker.stop()
+        speaker.abandonFocus()
         onStateChanged(this)
     }
 
@@ -190,6 +214,10 @@ class PagePlayer(
         if (playables.isEmpty()) return
         position = clamp(target)
         isFinished = false
+        // A deliberate move resets the interruption count: whatever restarts
+        // happened at the old position say nothing about whether the new one
+        // will be interrupted too.
+        restartCount = 0
         // Flush unconditionally: a jump while paused must still drop anything
         // the engine has already buffered, or it speaks after the user stopped.
         outstanding = null
@@ -212,6 +240,10 @@ class PagePlayer(
         // position: the same position can legitimately be spoken twice.
         if (id != outstanding) return
         outstanding = null
+        // A clean finish is proof the interruption, if there was one, is
+        // over -- the next sentence gets a fresh count rather than carrying
+        // over a near-miss from a previous position.
+        restartCount = 0
 
         val block = playables.getOrNull(position.blockIndex) ?: return
         val next = if (position.sentenceIndex + 1 < block.sentences.size) {
@@ -221,6 +253,7 @@ class PagePlayer(
         } else {
             isPlaying = false
             isFinished = true
+            speaker.abandonFocus()
             onStateChanged(this)
             return
         }
@@ -231,6 +264,45 @@ class PagePlayer(
         // queue. Flushing is for jumps, where there really is speech to stop.
         speakCurrent(flush = false)
         onStateChanged(this)
+    }
+
+    /**
+     * Called when the engine reports an utterance interrupted rather than
+     * finished (`UtteranceProgressListener.onStop`).
+     *
+     * `pause`, `stop` and `jumpTo` all clear [outstanding] to null *before*
+     * calling `speaker.stop()`, so the stop they themselves cause always
+     * arrives here with an id that no longer matches anything -- the normal,
+     * silent, self-inflicted case, handled by simply doing nothing. When the
+     * id DOES match, something *else* flushed us mid-sentence: a focus loss,
+     * a stray guidance cue, another app's own speech. The old behaviour --
+     * routing this straight into [onUtteranceDone] -- read that as the
+     * sentence having finished and skipped past it, so whatever the listener
+     * was hearing simply vanished with no ending. Re-speaking it queued
+     * behind whatever interrupted costs a repeated half-second, which is a
+     * far smaller failure than a sentence that disappears with no trace.
+     */
+    private fun onUtteranceStopped(id: String) {
+        if (!isPlaying || id != outstanding) return
+        outstanding = null
+        restartCount++
+        if (restartCount > MAX_CONSECUTIVE_RESTARTS) {
+            // Whatever is flushing this exact sentence is not resolving --
+            // a real, one-off interruption would have cleared within a try
+            // or two. Restarting forever is silence's own failure mode in
+            // disguise: it never reaches the rest of the page, and gives no
+            // sign anything is wrong. Stop cleanly instead of looping.
+            isPlaying = false
+            restartCount = 0
+            speaker.abandonFocus()
+            speaker.speak("Reading stopped.", "u${utteranceSeq++}-giveup", flush = true)
+            onStateChanged(this)
+            return
+        }
+        // Queue, not flush: this races whatever just interrupted the
+        // sentence, and flushing here could cancel the very thing we are
+        // trying to resume behind.
+        speakCurrent(flush = false)
     }
 
     private fun speakCurrent(flush: Boolean) {
@@ -248,4 +320,15 @@ class PagePlayer(
         return Position(b, s)
     }
 
+    companion object {
+        /**
+         * How many times in a row the same sentence may be re-spoken after an
+         * interruption before giving up. Three survives one genuinely
+         * transient loss (a single notification, a momentary focus steal)
+         * with room to spare, while still catching a broken or endlessly
+         * re-contested audio session before it turns into an infinite loop
+         * of the same half-second of speech.
+         */
+        private const val MAX_CONSECUTIVE_RESTARTS = 3
+    }
 }

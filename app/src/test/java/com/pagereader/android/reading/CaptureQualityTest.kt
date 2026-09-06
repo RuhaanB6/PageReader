@@ -55,7 +55,8 @@ class CaptureQualityTest {
     fun lowConfidenceIsReportedAsBlurry() {
         val v = CaptureQuality.assess(emptySet(), page(0.42f))
         assertFalse(v.usable)
-        assertTrue(v.message!!.contains("blurry"))
+        assertTrue("must name the likely remedy: ${v.message}",
+            v.message!!.contains("closer") || v.message!!.contains("one column"))
         assertTrue("must say what to do", v.message!!.contains("retake"))
     }
 
@@ -75,7 +76,7 @@ class CaptureQualityTest {
     @Test
     fun clippingIsReportedInPreferenceToBlur() {
         val v = CaptureQuality.assess(setOf(Side.RIGHT), page(0.30f))
-        assertTrue("should name the edge, not the blur: ${v.message}",
+        assertTrue("should name the edge, not the text quality: ${v.message}",
             v.message!!.contains("right edge"))
     }
 

@@ -2,6 +2,7 @@ package com.pagereader.android.audio
 
 import android.content.Context
 import android.media.AudioAttributes
+import android.media.AudioFocusRequest
 import android.media.AudioManager
 import android.media.ToneGenerator
 import android.os.Bundle
@@ -36,7 +37,43 @@ class TtsManager(private val context: Context) : com.pagereader.android.reading.
      * the player and Compose state are main-thread only.
      */
     private var onUtteranceDone: ((String) -> Unit)? = null
+
+    /**
+     * Set by [PagePlayer] via [setOnStopped]. Fires when the engine reports an
+     * utterance interrupted rather than finished -- see the `onStop` override
+     * below for why this must not be folded back into [onUtteranceDone].
+     */
+    private var onUtteranceStopped: ((String) -> Unit)? = null
     private val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
+
+    /**
+     * Built once, not per-request: [AudioFocusRequest.Builder] needs it and so
+     * does `TextToSpeech.setAudioAttributes`, and the two must agree or the
+     * system has no reason to treat this app's speech and its focus request
+     * as the same stream.
+     */
+    private val audioAttributes = AudioAttributes.Builder()
+        .setUsage(AudioAttributes.USAGE_ASSISTANCE_ACCESSIBILITY)
+        .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+        .build()
+
+    private val audioManager: AudioManager? by lazy {
+        context.getSystemService(AudioManager::class.java)
+    }
+    private var focusRequest: AudioFocusRequest? = null
+
+    /**
+     * Set by [MainActivity] via [setOnFocusChange]. `TtsManager` deliberately
+     * does not hold a `PagePlayer` reference -- it is a leaf audio class and
+     * the player is the thing that knows what "pause" and "resume" mean --
+     * so a focus change is surfaced as a plain callback and whoever wires up
+     * the player decides what to do with it.
+     */
+    private var onFocusChange: ((Int) -> Unit)? = null
+
+    private val focusListener = AudioManager.OnAudioFocusChangeListener { change ->
+        onFocusChange?.invoke(change)
+    }
 
     @Volatile
     private var available = false
@@ -61,12 +98,7 @@ class TtsManager(private val context: Context) : com.pagereader.android.reading.
 
             tts?.language = locale
             tts?.setSpeechRate(SPEECH_RATE)
-            tts?.setAudioAttributes(
-                AudioAttributes.Builder()
-                    .setUsage(AudioAttributes.USAGE_ASSISTANCE_ACCESSIBILITY)
-                    .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
-                    .build()
-            )
+            tts?.setAudioAttributes(audioAttributes)
 
             tone = try {
                 ToneGenerator(AudioManager.STREAM_MUSIC, TONE_VOLUME)
@@ -87,16 +119,22 @@ class TtsManager(private val context: Context) : com.pagereader.android.reading.
                 }
                 /**
                  * A flushed or stopped utterance reports HERE, not via onDone.
-                 * Without this the player is left believing it is still
-                 * playing and waits for a callback that never arrives --
-                 * reading stops forever with no explanation, which for this
-                 * user is indistinguishable from a crash. Reachable from any
-                 * QUEUE_FLUSH: a guidance cue, an explore-mode region label,
-                 * or the page summary itself.
+                 * Routing it into [onUtteranceDone] used to be load-bearing --
+                 * without SOME routing the player is left believing it is
+                 * still playing and waits for a callback that never arrives,
+                 * so reading stops forever with no explanation, indistinguishable
+                 * from a crash to a user who cannot see the screen. But treating
+                 * every stop as a *done* is its own bug: `PagePlayer` reads an
+                 * interrupted sentence as a completed one and advances past it,
+                 * silently losing whatever was cut off. So this now has its own
+                 * channel, [onUtteranceStopped], and the player decides what an
+                 * interruption means instead of this class deciding for it.
+                 * Reachable from any QUEUE_FLUSH: a guidance cue, a mode-change
+                 * announcement, or the page summary itself.
                  */
                 override fun onStop(utteranceId: String?, interrupted: Boolean) {
                     val id = utteranceId ?: return
-                    mainHandler.post { onUtteranceDone?.invoke(id) }
+                    mainHandler.post { onUtteranceStopped?.invoke(id) }
                 }
 
                 @Deprecated("required by the platform base class")
@@ -185,6 +223,36 @@ class TtsManager(private val context: Context) : com.pagereader.android.reading.
         onUtteranceDone = listener
     }
 
+    override fun setOnStopped(listener: (String) -> Unit) {
+        onUtteranceStopped = listener
+    }
+
+    override fun requestFocus() {
+        val am = audioManager ?: return
+        val request = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
+            .setAudioAttributes(audioAttributes)
+            .setOnAudioFocusChangeListener(focusListener, mainHandler)
+            .build()
+        focusRequest = request
+        am.requestAudioFocus(request)
+    }
+
+    override fun abandonFocus() {
+        val am = audioManager ?: return
+        focusRequest?.let { am.abandonAudioFocusRequest(it) }
+        focusRequest = null
+    }
+
+    /**
+     * Set by [MainActivity]. Fires on the same focus-change thread as any
+     * other engine callback here, which is why [focusListener] is built with
+     * [mainHandler] -- the listener this exposes must only ever see the main
+     * thread, matching every other callback in this class.
+     */
+    fun setOnFocusChange(listener: (Int) -> Unit) {
+        onFocusChange = listener
+    }
+
     /** True when an engine and an English voice were both found at init. */
     val isAvailable: Boolean get() = available
 
@@ -195,6 +263,7 @@ class TtsManager(private val context: Context) : com.pagereader.android.reading.
 
     fun shutdown() {
         available = false
+        abandonFocus()
         tts?.stop()
         tts?.shutdown()
         tts = null

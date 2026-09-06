@@ -53,7 +53,17 @@ object CaptureQuality {
         }
 
         if (page.meanConfidence < OcrPage.USABLE_CONFIDENCE) {
-            return Verdict(false, "The text came out blurry. Volume up to retake.")
+            // Name the remedy that actually works. The commonest cause on a
+            // phone is a page too dense to resolve in one shot -- a newspaper
+            // front page came back at 0.63 and read as nonsense -- and the fix
+            // for that is to fill the frame with less of it, not to hold
+            // steadier. "Blurry" sent the user to fix the wrong thing.
+            return Verdict(
+                false,
+                "I could not read that clearly enough to be sure of the words. " +
+                    "Try moving closer, or photograph one column at a time. " +
+                    "Volume up to retake.",
+            )
         }
 
         return Verdict(true, null)

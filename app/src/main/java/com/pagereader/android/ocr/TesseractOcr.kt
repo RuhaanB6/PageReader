@@ -48,11 +48,12 @@ class TesseractOcr private constructor(
         // A page photographed sideways is the one failure the confidence score
         // reliably catches, and it is cheap to undo. Rotating costs one more
         // pass; getting it wrong costs the user the entire document.
-        if (first.meanConfidence >= OcrPage.USABLE_CONFIDENCE) {
+        if (first.meanConfidence >= OcrPage.ROTATION_RETRY_CONFIDENCE) {
             return first.toPage(started)
         }
 
-        Log.i(TAG, "confidence ${first.meanConfidence} below ${OcrPage.USABLE_CONFIDENCE}; retrying rotated")
+        Log.i(TAG, "confidence ${first.meanConfidence} below " +
+            "${OcrPage.ROTATION_RETRY_CONFIDENCE}; retrying rotated")
         val rotated = Mat()
         return try {
             Core.rotate(page, rotated, Core.ROTATE_90_CLOCKWISE)

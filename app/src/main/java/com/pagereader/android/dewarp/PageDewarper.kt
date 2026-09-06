@@ -38,11 +38,11 @@ class PageDewarper(private val detector: PageDetector) {
     fun dewarp(still: Mat): DewarpResult {
         if (still.empty() || still.width() < 2 || still.height() < 2) {
             Log.w(TAG, "still is empty; nothing to dewarp")
-            return DewarpResult(still.clone(), applied = false, homography = null)
+            return DewarpResult(cappedCopy(still), applied = false, homography = null)
         }
 
         val detected = detectOnStill(still)
-            ?: return DewarpResult(still.clone(), applied = false, homography = null).also {
+            ?: return DewarpResult(cappedCopy(still), applied = false, homography = null).also {
                 Log.w(TAG, "no quad on the still; reading the whole photo")
             }
 
@@ -130,6 +130,28 @@ class PageDewarper(private val detector: PageDetector) {
         return area < MIN_AREA_FRACTION * still.width() * still.height()
     }
 
+    /**
+     * A copy of [still] scaled so its long side is at most [MAX_LONG_SIDE].
+     *
+     * The fallback path is "read the whole photo", and on this phone the whole
+     * photo was 63 megapixels: Tesseract allocates an ARGB bitmap of whatever
+     * it is handed, which came to 255 MB and killed the process. The failure
+     * path meant to keep the user reading was the one that stopped it.
+     */
+    private fun cappedCopy(still: Mat): Mat {
+        val longSide = max(still.width(), still.height()).toDouble()
+        if (longSide <= MAX_LONG_SIDE) return still.clone()
+        val scale = MAX_LONG_SIDE / longSide
+        val out = Mat()
+        Imgproc.resize(
+            still, out,
+            Size((still.width() * scale).roundToInt().toDouble(),
+                (still.height() * scale).roundToInt().toDouble()),
+            0.0, 0.0, Imgproc.INTER_AREA,
+        )
+        return out
+    }
+
     private fun edgeLengths(q: List<Point>): List<Double> =
         q.indices.map { hypot(q[(it + 1) % q.size].x - q[it].x, q[(it + 1) % q.size].y - q[it].y) }
 
@@ -144,7 +166,7 @@ class PageDewarper(private val detector: PageDetector) {
         var h = max(hypot(bl.x - tl.x, bl.y - tl.y), hypot(br.x - tr.x, br.y - tr.y))
         if (w < 1.0 || h < 1.0) {
             Log.w(TAG, "degenerate output size; reading the whole photo")
-            return DewarpResult(still.clone(), applied = false, homography = null)
+            return DewarpResult(cappedCopy(still), applied = false, homography = null)
         }
 
         // Scale the whole page rather than either side alone, so the aspect
@@ -194,7 +216,7 @@ class PageDewarper(private val detector: PageDetector) {
             Log.e(TAG, "warp failed; reading the whole photo", t)
             out.release()
             homography.release()
-            DewarpResult(still.clone(), applied = false, homography = null)
+            DewarpResult(cappedCopy(still), applied = false, homography = null)
         }
     }
 

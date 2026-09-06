@@ -138,7 +138,6 @@ class CaptureStoreTest {
     @Test
     fun listReturnsMostRecentFirst() {
         val a = save()
-        Thread.sleep(1100) // ids and mtimes are second-resolution
         val b = save()
         val ids = store.list().map { it.id }
         assertTrue("expected both captures, got $ids", ids.containsAll(listOf(a.id, b.id)))
@@ -150,6 +149,13 @@ class CaptureStoreTest {
     /**
      * Nothing else deletes these and a page is around a megabyte, so the cap
      * is what stops the store growing without bound.
+     */
+    /**
+     * Ordering must not depend on filesystem timestamp resolution.
+     *
+     * This phone keeps mtime to the second, so four captures written inside
+     * one second looked simultaneous and prune() kept an arbitrary pair. The
+     * emulator's filesystem is finer grained and hid it entirely.
      */
     @Test
     fun pruneKeepsOnlyTheNewest() {

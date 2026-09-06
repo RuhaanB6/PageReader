@@ -173,8 +173,28 @@ object HocrParser {
         }
         closeBlock()
 
+        // Weighted by word count, not a plain mean over blocks.
+        //
+        // Averaging blocks gives a two-word caption the same say as a
+        // 200-word article, which destroys the signal in both directions: a
+        // newspaper photo whose every paragraph was garbage scored 0.629
+        // because four short headlines read well, while the `ppt` fixture --
+        // which reads correctly -- scored 0.688 because a couple of tiny
+        // blocks dragged it down. The two were 0.06 apart, with no safe
+        // threshold between them.
+        //
+        // Weighting by words separates them properly: 0.657 for the garbage
+        // against 0.872 for the good page. What matters is how much of the
+        // text the user will actually hear was read confidently.
         val withWords = blocks.filter { it.text.isNotBlank() }
-        val mean = if (withWords.isEmpty()) 0f else withWords.map { it.confidence }.average().toFloat()
+        var weighted = 0.0
+        var totalWords = 0
+        for (b in withWords) {
+            val n = b.text.split(WHITESPACE).count { it.isNotBlank() }
+            weighted += b.confidence.toDouble() * n
+            totalWords += n
+        }
+        val mean = if (totalWords == 0) 0f else (weighted / totalWords).toFloat()
         return ParsedPage(pageW, pageH, blocks, mean)
     }
 

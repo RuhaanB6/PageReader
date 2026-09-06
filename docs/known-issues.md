@@ -57,6 +57,68 @@ then.
 
 ---
 
+## TTS reliability (Part 1 of the reliability + UI plan)
+
+Four independent causes of "speech cuts off mid-sentence," the top complaint from
+the first real-device session. All four are fixed; the fifth cause from the same
+review (TalkBack contention in the reading screen) is deferred to the UI pass
+that replaces `ReadingScreen`/`ExploreScreen`.
+
+### Screen sleep suspends the process mid-page
+`fixed 2026-09-05` · `MainActivity.onCreate`
+
+Nothing set `FLAG_KEEP_SCREEN_ON` and nothing held a wake lock. A page is
+minutes of audio with no touch input, so the display slept and HarmonyOS
+PowerGenie suspended the process -- the same `Pged-Freezer` mechanism
+documented in `CLAUDE.md`. Speech stopped dead and never resumed. Fix:
+`window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)`, set once for
+the whole activity.
+
+### An interrupted utterance was read as a finished one
+`fixed 2026-09-05` · `TtsManager` / `PagePlayer` / `Speaker`
+
+`onStop` was routed into the same callback as `onDone`, so any `QUEUE_FLUSH`
+made `PagePlayer` think the interrupted sentence had finished, advance past
+it, and silently drop it. Fix: `Speaker` gained `setOnStopped`, distinct from
+`setOnDone`; `PagePlayer.onUtteranceStopped` re-speaks the current sentence
+(queued, not flushed) instead of advancing, bounded by a `restartCount` that
+gives up after 3 consecutive restarts at the same position rather than looping
+forever. Covered by `PagePlayerTest`.
+
+### No audio focus request
+`fixed 2026-09-05` · `TtsManager` / `PagePlayer` / `Speaker`
+
+`TtsManager` never called `requestAudioFocus`, so any notification, call or
+vendor audio stopped accessibility speech with no recovery. Fix:
+`Speaker.requestFocus()`/`abandonFocus()`, requested in `PagePlayer.play()` and
+abandoned on pause/stop/finish; `TtsManager` exposes focus changes via
+`setOnFocusChange` rather than holding a `PagePlayer` reference, and
+`MainActivity` wires transient loss to pause+resume and permanent loss to
+pause-and-stay-paused.
+
+### Guidance and mode-change announcements flushed the page being read
+`fixed 2026-09-05` · `MainActivity`
+
+Several `ttsManager.say(...)` call sites defaulted to `flush = true` while the
+player could be mid-sentence: entering explore mode, the per-region label and
+exit announcement inside it, the page summary (which could clip the tail of a
+previous verdict/failure message on a fast retake), "Ready for the next page"
+in `returnToCamera`, and the shake-stop "Stopped." confirmation eating its own
+tail. All changed to `flush = false`. `ttsManager.speak(instruction)` (framing
+guidance) deliberately keeps `QUEUE_FLUSH` -- a stale correction is worse than
+a clipped word, and the player never runs during FRAMING.
+
+### TalkBack contention in the reading screen
+`open` · deferred to the UI-rebuild pass · `ReadingScreen` / new `PageScreen`
+
+`ReadingScreen` recomposes on every block change and TalkBack announces it
+through the same engine as the page reading. Fix belongs with the
+`PageScreen` rebuild (stable `contentDescription`/`traversalIndex`, "current"
+expressed only through drawing, `liveRegion = LiveRegionMode.None` on the
+status text), not this pass.
+
+---
+
 ## Storage and telemetry
 
 ### `SessionRecorder` has no retention cap

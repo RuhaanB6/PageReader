@@ -70,11 +70,21 @@ class CaptureStore(context: Context) {
         }
     }
 
-    /** Most recent first. */
+    /**
+     * Most recent first.
+     *
+     * Ordered by the timestamp embedded in the id, not by the file's mtime.
+     * The JSC-AL50's filesystem keeps mtime at second resolution, so several
+     * captures written inside the same second are indistinguishable by
+     * lastModified and prune() then discards an arbitrary subset -- it kept
+     * the wrong two on the first hardware run, having passed on an emulator
+     * whose filesystem is finer grained. The id carries milliseconds and is
+     * assigned at save time, so it is the authority.
+     */
     fun list(): List<Capture> =
         root.listFiles { f: File -> f.isDirectory && File(f, OCR).exists() }
             .orEmpty()
-            .map { Capture(it.name, it, it.lastModified()) }
+            .map { Capture(it.name, it, timestampOf(it.name) ?: it.lastModified()) }
             .sortedByDescending { it.savedAtMs }
 
     fun mostRecent(): Capture? = list().firstOrNull()
@@ -208,6 +218,17 @@ class CaptureStore(context: Context) {
         /** Pages kept before the oldest are pruned. */
         const val MAX_CAPTURES = 20
 
-        fun newId(): String = "cap-${System.currentTimeMillis()}"
+        fun newId(): String = "cap-${System.currentTimeMillis()}-${nextSuffix()}"
+
+        /**
+         * Disambiguates two saves landing in the same millisecond, so ordering
+         * never depends on the clock's resolution.
+         */
+        private var suffix = 0
+        private fun nextSuffix(): Int = ++suffix
+
+        /** Milliseconds encoded in an id, or null if it was not made by us. */
+        fun timestampOf(id: String): Long? =
+            id.removePrefix("cap-").substringBefore('-').toLongOrNull()
     }
 }
