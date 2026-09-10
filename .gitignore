@@ -9,6 +9,7 @@
 /.idea/assetWizardSettings.xml
 .DS_Store
 /build
+build/
 /captures
 .externalNativeBuild
 .cxx
@@ -35,3 +36,26 @@ app/src/main/assets/models/
 /CLAUDE.local.md
 /.claude/
 /brain/
+
+# Session recordings pulled off the device by tools/pull-session.sh
+sessions/
+
+# Local model-export environment (tools/export-model.sh)
+.venv/
+models/
+
+# Collector output pulled by tools/pull-collection.sh
+collections/
+
+# Generated YOLO datasets
+datasets/
+runs/
+*.pt
+
+# Planning handoff + its Python oracle — local working docs, not repo artifacts
+/HANDOFF-*.md
+/HANDOFF-*.py
+models-archive/
+
+# Tesseract language data -- fetch with tools/fetch-tessdata.sh
+app/src/main/assets/tessdata/

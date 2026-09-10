@@ -1,0 +1,375 @@
+<title>Collector Shot List</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+  :root{
+    --paper:#F5F7F9;
+    --card:#FFFFFF;
+    --ink:#14171C;
+    --ink-2:#3D4552;
+    --muted:#6B7580;
+    --line:#DDE3E9;
+    --line-2:#C6D0D9;
+    --accent:#0F766E;
+    --accent-soft:#D7EDEA;
+    --flag:#9A4A0B;
+    --flag-soft:#F6E5D6;
+    --slate:#1B2027;
+    --slate-ink:#E9EDF1;
+  }
+  @media (prefers-color-scheme: dark){
+    :root:not([data-theme="light"]){
+      --paper:#0E1116;
+      --card:#171B21;
+      --ink:#EDF1F5;
+      --ink-2:#B9C3CE;
+      --muted:#8A96A3;
+      --line:#262C35;
+      --line-2:#343C47;
+      --accent:#4DBFB2;
+      --accent-soft:#12312E;
+      --flag:#E0954F;
+      --flag-soft:#33220F;
+      --slate:#080A0D;
+      --slate-ink:#E9EDF1;
+    }
+  }
+  :root[data-theme="dark"]{
+    --paper:#0E1116;
+    --card:#171B21;
+    --ink:#EDF1F5;
+    --ink-2:#B9C3CE;
+    --muted:#8A96A3;
+    --line:#262C35;
+    --line-2:#343C47;
+    --accent:#4DBFB2;
+    --accent-soft:#12312E;
+    --flag:#E0954F;
+    --flag-soft:#33220F;
+    --slate:#080A0D;
+    --slate-ink:#E9EDF1;
+  }
+
+  *{box-sizing:border-box}
+  body{
+    background:var(--paper);
+    color:var(--ink);
+    font-family:"IBM Plex Sans",-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+    line-height:1.55;
+    -webkit-text-size-adjust:100%;
+  }
+  .wrap{max-width:780px;margin:0 auto;padding:20px 16px 72px}
+
+  /* Slate header: the clapperboard a shot list belongs to. */
+  .slate{
+    background:var(--slate);color:var(--slate-ink);
+    border-radius:6px;overflow:hidden;
+  }
+  .slate-stripe{
+    height:14px;
+    background:repeating-linear-gradient(115deg,var(--slate-ink) 0 22px,var(--slate) 22px 44px);
+  }
+  .slate-body{padding:18px 18px 20px;display:flex;flex-direction:column;gap:10px}
+  h1{
+    font-family:Archivo,"IBM Plex Sans",sans-serif;
+    font-weight:700;font-size:clamp(26px,7vw,38px);
+    letter-spacing:-.02em;margin:0;text-wrap:balance;line-height:1.08;
+  }
+  .slate-meta{
+    display:grid;grid-template-columns:repeat(auto-fit,minmax(128px,1fr));gap:10px 18px;
+    font-family:"IBM Plex Mono",ui-monospace,monospace;font-size:12px;
+  }
+  .slate-meta div span{display:block;color:#93A0AD;font-size:10px;letter-spacing:.1em;text-transform:uppercase}
+
+  h2{
+    font-family:Archivo,sans-serif;font-weight:600;
+    font-size:13px;letter-spacing:.13em;text-transform:uppercase;
+    color:var(--muted);margin:38px 0 12px;
+  }
+  p{margin:0 0 12px;color:var(--ink-2);max-width:65ch}
+  a{color:var(--accent)}
+
+  .note{
+    border-left:3px solid var(--accent);
+    background:var(--accent-soft);
+    padding:12px 14px;border-radius:0 6px 6px 0;margin:0 0 14px;
+  }
+  .note p{margin:0;color:var(--ink)}
+  .note strong{font-weight:600}
+
+  /* Setups: a list of rows, not a deck of identical cards. */
+  ol.setups{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:10px}
+  .setup{
+    background:var(--card);border:1px solid var(--line);border-radius:8px;
+    padding:13px 14px;display:grid;grid-template-columns:auto 1fr;gap:12px;align-items:start;
+  }
+  .setup.flagged{border-color:var(--line-2);box-shadow:inset 3px 0 0 var(--flag)}
+  .tick{
+    appearance:none;width:22px;height:22px;margin:2px 0 0;flex:none;
+    border:1.5px solid var(--line-2);border-radius:5px;background:transparent;cursor:pointer;
+  }
+  .tick:checked{background:var(--accent);border-color:var(--accent)}
+  .tick:checked::after{
+    content:"";display:block;width:6px;height:11px;margin:2px auto 0;
+    border:solid #fff;border-width:0 2px 2px 0;transform:rotate(43deg);
+  }
+  .tick:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+  .setup-main{min-width:0;display:flex;flex-direction:column;gap:7px}
+  .setup-top{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+  .num{
+    font-family:"IBM Plex Mono",monospace;font-size:11px;font-weight:600;
+    color:var(--muted);letter-spacing:.06em;
+  }
+  .chip{
+    font-family:"IBM Plex Mono",monospace;font-size:12px;font-weight:500;
+    background:var(--paper);border:1px solid var(--line);
+    padding:2px 7px;border-radius:4px;color:var(--ink);white-space:nowrap;
+  }
+  .why{font-size:13.5px;color:var(--ink-2);margin:0}
+  .why b{color:var(--ink);font-weight:600}
+  .badge{
+    font-family:Archivo,sans-serif;font-size:9.5px;font-weight:700;letter-spacing:.1em;
+    text-transform:uppercase;padding:3px 7px;border-radius:3px;
+    background:var(--flag-soft);color:var(--flag);
+  }
+  .badge.calib{background:var(--accent-soft);color:var(--accent)}
+
+  table{width:100%;border-collapse:collapse;font-size:14px}
+  .scroll{overflow-x:auto;border:1px solid var(--line);border-radius:8px;background:var(--card)}
+  th,td{padding:9px 12px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top}
+  th{
+    font-family:Archivo,sans-serif;font-size:10px;letter-spacing:.11em;text-transform:uppercase;
+    color:var(--muted);font-weight:600;
+  }
+  tr:last-child td{border-bottom:none}
+  td.mono{font-family:"IBM Plex Mono",monospace;font-size:12.5px;white-space:nowrap}
+  td.mono b{color:var(--flag);font-weight:600}
+
+  ul.ops{margin:0;padding:0;list-style:none;display:flex;flex-direction:column;gap:9px}
+  ul.ops li{
+    padding-left:16px;position:relative;color:var(--ink-2);font-size:14.5px;max-width:65ch;
+  }
+  ul.ops li::before{
+    content:"";position:absolute;left:0;top:9px;width:6px;height:6px;
+    border-radius:50%;background:var(--line-2);
+  }
+  ul.ops b{color:var(--ink);font-weight:600}
+  code{
+    font-family:"IBM Plex Mono",monospace;font-size:12.5px;
+    background:var(--card);border:1px solid var(--line);padding:1px 5px;border-radius:4px;
+  }
+  .progress{
+    font-family:"IBM Plex Mono",monospace;font-size:12px;color:var(--muted);
+    margin:10px 0 0;
+  }
+  @media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
+</style>
+
+<div class="wrap">
+
+  <header class="slate">
+    <div class="slate-stripe"></div>
+    <div class="slate-body">
+      <h1>Collector Shot List</h1>
+      <div class="slate-meta">
+        <div><span>App</span>PageReader Collector</div>
+        <div><span>Target</span>~1200 frames</div>
+        <div><span>Per setup</span>9 takes · ~4 min</div>
+        <div><span>Class</span>page (single)</div>
+      </div>
+    </div>
+  </header>
+
+  <h2>Calibration: done</h2>
+  <div class="note">
+    <p><strong>48 frames, diversity 27, capture rate 510ms against a 500ms target.</strong> The fixed blur threshold turned out to reject nothing at all — real sharpness ran 348–4588 against a bar of 25 — so it is now scene-relative: a frame is rejected below 45% of the running median for the current scene. Expect the <code>blur</code> counter to actually move now. That is the gate working, not a fault. Start at setup 01.</p>
+  </div>
+
+  <h2>Setups</h2>
+  <p>Eight setups plus the calibration you already shot. Document type is the least useful axis — a sheet, a letter and a book page all look like one bright quadrilateral to a detector — so the variety here is spent on <b>surface and lighting</b>, which is what actually broke things. Order is deliberate: failure cases first, so stopping halfway still leaves the data that matters.</p>
+
+  <ol class="setups" id="setups">
+
+    <li class="setup flagged" data-id="s0">
+      <input class="tick" type="checkbox" aria-label="Setup 0 complete">
+      <div class="setup-main">
+        <div class="setup-top">
+          <span class="num">00</span>
+          <span class="badge calib">Calibrated</span>
+          <span class="chip">lightdesk</span><span class="chip">sheet</span><span class="chip">bright</span>
+        </div>
+        <p class="why">Done — 48 frames, diversity 27. Thresholds tuned from it: the blur gate is now scene-relative rather than a fixed number.</p>
+      </div>
+    </li>
+
+    <li class="setup flagged" data-id="s1">
+      <input class="tick" type="checkbox" aria-label="Setup 1 complete">
+      <div class="setup-main">
+        <div class="setup-top">
+          <span class="num">01</span>
+          <span class="badge">Failure case</span>
+          <span class="chip">lightdesk</span><span class="chip">sheet</span><span class="chip">bright</span>
+        </div>
+        <p class="why">Same scene as calibration, now all nine takes. <b>Light page on a light surface</b> — the case that broke the edge detector and the colour detector both.</p>
+      </div>
+    </li>
+
+    <li class="setup flagged" data-id="s2">
+      <input class="tick" type="checkbox" aria-label="Setup 2 complete">
+      <div class="setup-main">
+        <div class="setup-top">
+          <span class="num">02</span>
+          <span class="badge">Failure case</span>
+          <span class="chip">carpet</span><span class="chip">newspaper</span><span class="chip">bright</span>
+        </div>
+        <p class="why">Newspaper on the patterned carpet. <b>The exact scene that made the detector box the floor.</b> The <code>negative</code> take here — carpet, no document — is the single most valuable negative in the set.</p>
+      </div>
+    </li>
+
+    <li class="setup flagged" data-id="s3">
+      <input class="tick" type="checkbox" aria-label="Setup 3 complete">
+      <div class="setup-main">
+        <div class="setup-top">
+          <span class="num">03</span>
+          <span class="badge">Failure case</span>
+          <span class="chip">lightdesk</span><span class="chip">newspaper</span><span class="chip">dim</span>
+        </div>
+        <p class="why">Newsprint is grey, not white, and dim light shrinks every contrast further. Turn the main light off; work by a lamp or window.</p>
+      </div>
+    </li>
+
+    <li class="setup" data-id="s4">
+      <input class="tick" type="checkbox" aria-label="Setup 4 complete">
+      <div class="setup-main">
+        <div class="setup-top">
+          <span class="num">04</span>
+          <span class="chip">darkdesk</span><span class="chip">sheet</span><span class="chip">bright</span>
+        </div>
+        <p class="why">The easy baseline, and the regression control. If the trained model ever fails here, the problem is the training rather than the scene. <b>Optional:</b> swap in a glossy page for one take — nothing else in this list has specular glare.</p>
+      </div>
+    </li>
+
+    <li class="setup flagged" data-id="s5">
+      <input class="tick" type="checkbox" aria-label="Setup 5 complete">
+      <div class="setup-main">
+        <div class="setup-top">
+          <span class="num">05</span>
+          <span class="badge">Discrimination</span>
+          <span class="chip">cluttered</span><span class="chip">sheet</span><span class="chip">mixed</span>
+        </div>
+        <p class="why">Keyboard, mug, phone, laptop in frame alongside the page. Teaches the model to pick the page out of <b>other objects</b>, not just off bare background — nothing else in this list does that.</p>
+      </div>
+    </li>
+
+    <li class="setup" data-id="s6">
+      <input class="tick" type="checkbox" aria-label="Setup 6 complete">
+      <div class="setup-main">
+        <div class="setup-top">
+          <span class="num">06</span>
+          <span class="chip">wood</span><span class="chip">newspaper</span><span class="chip">sidelit</span>
+        </div>
+        <p class="why">Newspaper on bare wood, lit hard from one side. Strong grain under the page plus a brightness gradient across it.</p>
+      </div>
+    </li>
+
+    <li class="setup" data-id="s7">
+      <input class="tick" type="checkbox" aria-label="Setup 7 complete">
+      <div class="setup-main">
+        <div class="setup-top">
+          <span class="num">07</span>
+          <span class="chip">lightdesk</span><span class="chip">letter</span><span class="chip">shadowed</span>
+        </div>
+        <p class="why">A printed document page — denser, more uniform text than the lined sheet. Let your hand or the phone cast a hard shadow across it. Half-shadowed pages are common in real use and rare in clean datasets.</p>
+      </div>
+    </li>
+
+    <li class="setup flagged" data-id="s8">
+      <input class="tick" type="checkbox" aria-label="Setup 8 complete">
+      <div class="setup-main">
+        <div class="setup-top">
+          <span class="num">08</span>
+          <span class="badge">Hardest</span>
+          <span class="chip">carpet</span><span class="chip">sheet</span><span class="chip">dim</span>
+        </div>
+        <p class="why">Back to the carpet, now a plain white sheet in poor light — the hardest combination here. Shoot it last, once your sweeping technique has settled.</p>
+      </div>
+    </li>
+
+  </ol>
+  <p class="progress" id="progress">0 of 10 setups shot</p>
+
+  <h2>The nine takes, in order</h2>
+  <p>Same sequence inside every setup. The selector auto-advances when you stop, but starting is always an explicit press.</p>
+  <div class="scroll">
+    <table>
+      <thead>
+        <tr><th>Take</th><th>What to do</th></tr>
+      </thead>
+      <tbody>
+        <tr><td class="mono">full-overhead</td><td>Whole page in frame, camera flat above it. Drift slowly; don't hold still.</td></tr>
+        <tr><td class="mono"><b>partial-left</b></td><td>Slide until the page runs off the left edge, then back in.</td></tr>
+        <tr><td class="mono"><b>partial-right</b></td><td>Off the right edge, then back.</td></tr>
+        <tr><td class="mono"><b>partial-top</b></td><td>Off the top edge, then back.</td></tr>
+        <tr><td class="mono"><b>partial-bottom</b></td><td>Off the bottom edge, then back.</td></tr>
+        <tr><td class="mono">distance</td><td>In until the page overflows the frame, then far back until it's small.</td></tr>
+        <tr><td class="mono">tilted</td><td>About 30° off vertical, orbiting slowly around the page.</td></tr>
+        <tr><td class="mono">steep</td><td>Steep, close to edge-on. Heavy perspective.</td></tr>
+        <tr><td class="mono">negative</td><td>Remove the document. Sweep the bare surface.</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p style="margin-top:12px">The four <b style="color:var(--flag)">partial</b> takes are the point of the exercise. A page running off the frame edge is the state the user is in <em>while being guided</em> — a model trained only on complete pages would fail exactly when it's needed. Give them roughly 40% of your shooting time.</p>
+
+  <h2>Operating notes</h2>
+  <ul class="ops">
+    <li><b>You don't need the computer.</b> Frames write to the phone. Shoot anywhere, come back, then run <code>tools/pull-collection.sh</code>.</li>
+    <li><b>Recording stops if the app is backgrounded or the screen locks.</b> Don't switch away mid-take.</li>
+    <li><b>Changing any setup dropdown starts a new folder</b> — and so does relaunching the app. A setup split across two sessions lands in two folders; that's fine, pull them all.</li>
+    <li><b>Read the rejection counters, not the kept count.</b> Climbing <code>blur</code> means you're sweeping too fast. Climbing <code>dup</code> means you're barely moving. Both should tick over steadily.</li>
+    <li><b>Re-recording a take replaces it</b> after a confirm press, so a fumble can't quietly pollute good frames.</li>
+    <li><b>Watch free MB</b> on screen. Budget ~200 KB per frame; the full list is roughly 300 MB.</li>
+  </ul>
+
+  <h2>After each setup</h2>
+  <div class="scroll">
+    <table>
+      <thead><tr><th>Command</th><th>What it tells you</th></tr></thead>
+      <tbody>
+        <tr><td class="mono">pull-collection.sh</td><td>Per-take frames, median sharpness, and diversity</td></tr>
+        <tr><td class="mono">--all</td><td>Every collection pulled so far</td></tr>
+        <tr><td class="mono">--list</td><td>What's sitting on the device</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p style="margin-top:12px"><b>Diversity is the number to watch.</b> Forty near-identical frames are worth about as much as one, and the count alone won't tell you. A take flagged <code>TOO UNIFORM</code> should be reshot with more movement.</p>
+
+</div>
+
+<script>
+  (function () {
+    var KEY = 'pagereader-shotlist-v1';
+    var boxes = Array.prototype.slice.call(document.querySelectorAll('.setup .tick'));
+    var progress = document.getElementById('progress');
+    var state = {};
+
+    try { state = JSON.parse(localStorage.getItem(KEY) || '{}') || {}; } catch (e) { state = {}; }
+
+    function render() {
+      var done = boxes.filter(function (b) { return b.checked; }).length;
+      progress.textContent = done + ' of ' + boxes.length + ' setups shot';
+    }
+
+    boxes.forEach(function (box) {
+      var id = box.closest('.setup').dataset.id;
+      box.checked = !!state[id];
+      box.addEventListener('change', function () {
+        state[id] = box.checked;
+        try { localStorage.setItem(KEY, JSON.stringify(state)); } catch (e) { /* private mode */ }
+        render();
+      });
+    });
+
+    render();
+  })();
+</script>

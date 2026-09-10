@@ -1,0 +1,6 @@
+{
+  "_comment": "Hand-labelled page corners for the frames that defeat ColorPageDetector. Coordinates are in the 480x640 frame the fixtures decode to (the recorder's 480x360 snapshot un-squashed), ordered TL, TR, BR, BL. Labelled by eye 2026-09-05 and verified against the rendered overlay; accurate to a few pixels, which is far below the error the mask variants are being judged on.",
+  "f00100.jpg": [[56, 127], [325, 147], [312, 496], [47, 478]],
+  "f00072.jpg": [[60, 120], [338, 140], [327, 492], [57, 476]],
+  "f00084.jpg": [[19, 124], [299, 131], [296, 488], [15, 477]]
+}

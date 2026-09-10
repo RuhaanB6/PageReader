@@ -1,0 +1,84 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
+    "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en" lang="en">
+ <head>
+  <title></title>
+  <meta http-equiv="Content-Type" content="text/html;charset=utf-8"/>
+  <meta name='ocr-system' content='tesseract 5.5.3' />
+  <meta name='ocr-capabilities' content='ocr_page ocr_carea ocr_par ocr_line ocrx_word ocrp_dir ocrp_lang ocrp_wconf'/>
+ </head>
+ <body>
+  <div class='ocr_page' id='page_1' title='image "/Users/ruhaan/Desktop/Research &amp; Clubs/computer-vision-aid/data/samples/ppt.jpg"; bbox 0 0 2667 1500; ppageno 0; scan_res 300 300'>
+   <div class='ocr_carea' id='block_1_1' title="bbox 31 32 528 103">
+    <p class='ocr_par' id='par_1_1' lang='eng' title="bbox 31 32 528 103">
+     <span class='ocr_caption' id='line_1_1' title="bbox 31 32 528 103; baseline -0.002 -14; x_size 71; x_descenders 14; x_ascenders 15">
+      <span class='ocrx_word' id='word_1_1' title='bbox 31 32 184 103; x_wconf 95'>Step</span>
+      <span class='ocrx_word' id='word_1_2' title='bbox 218 32 238 88; x_wconf 89'>1</span>
+      <span class='ocrx_word' id='word_1_3' title='bbox 280 32 528 89; x_wconf 89'>Lead-in</span>
+     </span>
+    </p>
+   </div>
+   <div class='ocr_photo' id='block_1_2' title="bbox 0 0 566 118"></div>
+   <div class='ocr_carea' id='block_1_3' title="bbox 236 289 2365 352">
+    <p class='ocr_par' id='par_1_2' lang='eng' title="bbox 236 289 2365 352">
+     <span class='ocr_line' id='line_1_2' title="bbox 236 289 2365 352; baseline 0 -13; x_size 64; x_descenders 14; x_ascenders 13">
+      <span class='ocrx_word' id='word_1_4' title='bbox 236 290 353 339; x_wconf 96'>Talk</span>
+      <span class='ocrx_word' id='word_1_5' title='bbox 374 290 538 339; x_wconf 96'>about</span>
+      <span class='ocrx_word' id='word_1_6' title='bbox 557 290 697 339; x_wconf 96'>what</span>
+      <span class='ocrx_word' id='word_1_7' title='bbox 720 290 833 339; x_wconf 96'>kind</span>
+      <span class='ocrx_word' id='word_1_8' title='bbox 858 289 914 339; x_wconf 96'>of</span>
+      <span class='ocrx_word' id='word_1_9' title='bbox 931 289 1169 339; x_wconf 96'>festivals</span>
+      <span class='ocrx_word' id='word_1_10' title='bbox 1191 302 1292 352; x_wconf 96'>you</span>
+      <span class='ocrx_word' id='word_1_11' title='bbox 1317 302 1409 339; x_wconf 95'>are</span>
+      <span class='ocrx_word' id='word_1_12' title='bbox 1434 290 1718 339; x_wconf 96'>interested</span>
+      <span class='ocrx_word' id='word_1_13' title='bbox 1745 290 1789 338; x_wconf 95'>in</span>
+      <span class='ocrx_word' id='word_1_14' title='bbox 1815 290 1857 339; x_wconf 95'>is</span>
+      <span class='ocrx_word' id='word_1_15' title='bbox 1882 290 2003 339; x_wconf 96'>best</span>
+      <span class='ocrx_word' id='word_1_16' title='bbox 2025 302 2130 339; x_wconf 95'>one</span>
+      <span class='ocrx_word' id='word_1_17' title='bbox 2156 290 2221 352; x_wconf 95'>by</span>
+      <span class='ocrx_word' id='word_1_18' title='bbox 2243 302 2365 339; x_wconf 96'>one.</span>
+     </span>
+    </p>
+   </div>
+   <div class='ocr_carea' id='block_1_4' title="bbox 1964 626 2087 663">
+    <p class='ocr_par' id='par_1_3' lang='eng' title="bbox 1964 626 2087 663">
+     <span class='ocr_line' id='line_1_3' title="bbox 1964 626 2087 663; baseline -0.016 -6; x_size 37.160255; x_descenders 6.1602569; x_ascenders 12.916666">
+      <span class='ocrx_word' id='word_1_19' title='bbox 1964 626 1970 657; x_wconf 79'>|</span>
+      <span class='ocrx_word' id='word_1_20' title='bbox 2079 649 2087 663; x_wconf 34'>5</span>
+     </span>
+    </p>
+   </div>
+   <div class='ocr_carea' id='block_1_5' title="bbox 2060 672 2256 828">
+    <p class='ocr_par' id='par_1_4' lang='eng' title="bbox 2060 672 2279 828">
+     <span class='ocr_caption' id='line_1_4' title="bbox 2229 672 2256 753; baseline 0 -65; x_size 20.48; x_descenders 4.48; x_ascenders 5.4400001">
+      <span class='ocrx_word' id='word_1_21' title='bbox 2229 672 2256 753; x_wconf 39'>i</span>
+     </span>
+     <span class='ocr_caption' id='line_1_5' title="bbox 2060 730 2150 828; baseline 0 0; x_size 125; x_descenders 27; x_ascenders 33">
+      <span class='ocrx_word' id='word_1_22' title='bbox 2060 730 2150 828; x_wconf 86'>Day</span>
+     </span>
+    </p>
+   </div>
+   <div class='ocr_carea' id='block_1_6' title="bbox 2070 942 2131 955">
+    <p class='ocr_par' id='par_1_5' lang='eng' title="bbox 2070 942 2131 955">
+     <span class='ocr_line' id='line_1_6' title="bbox 2070 942 2131 955; baseline 0 -3; x_size 20; x_descenders 5; x_ascenders 5">
+      <span class='ocrx_word' id='word_1_23' title='bbox 2070 942 2131 955; x_wconf 12'>=.&quot;</span>
+     </span>
+    </p>
+   </div>
+   <div class='ocr_photo' id='block_1_7' title="bbox 274 462 2462 1028"></div>
+   <div class='ocr_carea' id='block_1_8' title="bbox 444 1094 2278 1162">
+    <p class='ocr_par' id='par_1_6' lang='eng' title="bbox 444 1094 2278 1162">
+     <span class='ocr_line' id='line_1_7' title="bbox 444 1094 2278 1162; baseline 0 -15; x_size 68; x_descenders 15; x_ascenders 14">
+      <span class='ocrx_word' id='word_1_24' title='bbox 444 1095 546 1148; x_wconf 96'>Rio</span>
+      <span class='ocrx_word' id='word_1_25' title='bbox 571 1094 828 1148; x_wconf 93'>Carnival</span>
+      <span class='ocrx_word' id='word_1_26' title='bbox 1057 1095 1178 1148; x_wconf 96'>The</span>
+      <span class='ocrx_word' id='word_1_27' title='bbox 1204 1094 1406 1162; x_wconf 95'>Spring</span>
+      <span class='ocrx_word' id='word_1_28' title='bbox 1436 1095 1675 1148; x_wconf 96'>Festival</span>
+      <span class='ocrx_word' id='word_1_29' title='bbox 1856 1095 2278 1162; x_wconf 96'>Thanksgiving</span>
+     </span>
+    </p>
+   </div>
+  </div>
+ </body>
+</html>
